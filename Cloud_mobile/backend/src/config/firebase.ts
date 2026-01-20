@@ -22,7 +22,13 @@ if (!admin.apps || admin.apps.length === 0) {
     if (path && existsSync(path)) {
       try {
         const content = readFileSync(path, 'utf-8');
-        serviceAccount = JSON.parse(content) as admin.ServiceAccount;
+        const jsonData = JSON.parse(content);
+        // Convertir project_id en projectId, private_key en privateKey, etc.
+        serviceAccount = {
+          projectId: jsonData.project_id || jsonData.projectId,
+          privateKey: jsonData.private_key || jsonData.privateKey,
+          clientEmail: jsonData.client_email || jsonData.clientEmail,
+        } as admin.ServiceAccount;
         loadedFrom = path;
         console.log('✅ Firebase: Clé de service chargée depuis', path);
         break;
@@ -56,11 +62,40 @@ if (!admin.apps || admin.apps.length === 0) {
     process.exit(1);
   }
 
+  console.log('🔍 DEBUG - Service Account Info:');
+  console.log('   - Project ID:', serviceAccount.projectId);
+  console.log('   - Client Email:', serviceAccount.clientEmail);
+  console.log('   - Private Key (first 50 chars):', serviceAccount.privateKey?.substring(0, 50));
+  console.log('   - Private Key length:', serviceAccount.privateKey?.length);
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    projectId: serviceAccount.projectId,
+    databaseURL: `https://${serviceAccount.projectId}.firebaseio.com`,
   });
 
   console.log('🔥 Firebase Admin SDK initialisé avec succès');
+  console.log('📦 Projet Firebase:', serviceAccount.projectId);
+  
+  // Vérifier la connexion Firestore
+  admin.firestore().settings({
+    ignoreUndefinedProperties: true,
+  });
+
+  // Tester la connexion Firestore
+  console.log('🧪 Test de connexion à Firestore...');
+  admin.firestore().collection('_test_').doc('_connection_test_').set({ test: true, timestamp: new Date() })
+    .then(() => {
+      console.log('✅ Connexion Firestore réussie!');
+      return admin.firestore().collection('_test_').doc('_connection_test_').delete();
+    })
+    .catch((error) => {
+      console.error('❌ Erreur de connexion Firestore:');
+      console.error('   Code:', error.code);
+      console.error('   Message:', error.message);
+      console.error('   Details:', error.details);
+      console.error('   Full error:', JSON.stringify(error, null, 2));
+    });
 }
 
 export const db = admin.firestore();

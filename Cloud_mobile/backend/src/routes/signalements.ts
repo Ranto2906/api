@@ -94,11 +94,25 @@ router.get('/', async (req: Request, res: Response) => {
       data: signalements,
       message: `${signalements.length} signalements trouvés`,
     } as SignalementApiResponse);
-  } catch (error) {
-    console.error('Erreur lors de la récupération des signalements:', error);
+  } catch (error: any) {
+    console.error('❌ Erreur lors de la récupération des signalements:', error);
+    console.error('   Type:', typeof error);
+    console.error('   Code:', error.code);
+    console.error('   Message:', error.message);
+    console.error('   Details:', error.details);
+    console.error('   Reason:', error.reason);
+    console.error('   Domain:', error.domain);
+    if (error.errorInfoMetadata) {
+      console.error('   Error Info Metadata:', JSON.stringify(error.errorInfoMetadata, null, 2));
+    }
     res.status(500).json({
       success: false,
       error: 'Impossible de récupérer les signalements',
+      details: {
+        code: error.code,
+        message: error.message,
+        reason: error.reason,
+      }
     } as SignalementApiResponse);
   }
 });

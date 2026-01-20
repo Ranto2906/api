@@ -134,10 +134,6 @@ const handleSubmit = async () => {
     errorMessage.value = 'Email invalide';
     return;
   }
-  if (password.value.length < 6) {
-    errorMessage.value = 'Mot de passe: 6 caractères minimum';
-    return;
-  }
 
   loading.value = true;
 
