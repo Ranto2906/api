@@ -1,90 +1,84 @@
 <template>
   <ion-page>
-    <ion-content :fullscreen="true" class="login-content">
-      <div class="login-wrapper">
-        <!-- Header avec logo -->
-        <div class="login-header">
-          <div class="logo-container">
-            <ion-icon :icon="constructOutline" class="logo-icon" />
+    <ion-content :fullscreen="true" class="auth-content">
+      <div class="auth-container">
+        <!-- Logo et titre -->
+        <div class="auth-header">
+          <div class="logo">
+            <ion-icon :icon="constructOutline" />
           </div>
           <h1>Travaux Routiers</h1>
-          <p>Antananarivo</p>
+          <p class="subtitle">Antananarivo - Signalement Mobile</p>
         </div>
 
-        <!-- Formulaire -->
-        <div class="login-form">
-          <ion-item class="form-item" lines="none">
-            <ion-icon :icon="mailOutline" slot="start" color="medium" />
-            <ion-input
-              v-model="email"
-              type="email"
-              placeholder="Adresse email"
-              autocomplete="email"
-            />
-          </ion-item>
-
-          <ion-item class="form-item" lines="none">
-            <ion-icon :icon="lockClosedOutline" slot="start" color="medium" />
-            <ion-input
-              v-model="password"
-              :type="showPassword ? 'text' : 'password'"
-              placeholder="Mot de passe"
-              autocomplete="current-password"
-            />
-            <ion-button fill="clear" slot="end" @click="showPassword = !showPassword">
-              <ion-icon :icon="showPassword ? eyeOffOutline : eyeOutline" color="medium" />
-            </ion-button>
-          </ion-item>
-
-          <ion-button
-            expand="block"
-            class="login-button"
-            @click="signIn"
-            :disabled="loading"
-          >
-            <ion-spinner v-if="loading && action === 'signin'" name="crescent" />
-            <span v-else>Se connecter</span>
-          </ion-button>
-
-          <div class="divider">
-            <span>ou</span>
+        <!-- Card de connexion -->
+        <div class="auth-card">
+          <h2>{{ isLogin ? 'Connexion' : 'Inscription' }}</h2>
+          
+          <div class="form-group">
+            <label>Email</label>
+            <div class="input-wrapper">
+              <ion-icon :icon="mailOutline" />
+              <ion-input
+                v-model="email"
+                type="email"
+                placeholder="votre@email.com"
+                :clear-input="true"
+              />
+            </div>
           </div>
 
-          <ion-button
-            expand="block"
-            fill="outline"
-            class="signup-button"
-            @click="signUp"
+          <div class="form-group">
+            <label>Mot de passe</label>
+            <div class="input-wrapper">
+              <ion-icon :icon="lockClosedOutline" />
+              <ion-input
+                v-model="password"
+                :type="showPassword ? 'text' : 'password'"
+                placeholder="••••••••"
+              />
+              <ion-button fill="clear" size="small" @click="showPassword = !showPassword">
+                <ion-icon :icon="showPassword ? eyeOffOutline : eyeOutline" />
+              </ion-button>
+            </div>
+          </div>
+
+          <!-- Message d'erreur -->
+          <div v-if="errorMessage" class="error-message">
+            <ion-icon :icon="alertCircleOutline" />
+            <span>{{ errorMessage }}</span>
+          </div>
+
+          <!-- Boutons -->
+          <ion-button 
+            expand="block" 
+            class="primary-btn"
+            @click="handleSubmit"
             :disabled="loading"
           >
-            <ion-spinner v-if="loading && action === 'signup'" name="crescent" />
-            <span v-else>Créer un compte</span>
+            <ion-spinner v-if="loading" name="dots" />
+            <span v-else>{{ isLogin ? 'Se connecter' : 'Créer mon compte' }}</span>
           </ion-button>
-        </div>
 
-        <!-- Info utilisateur connecté -->
-        <div v-if="user" class="user-info">
-          <ion-icon :icon="checkmarkCircleOutline" color="success" />
-          <span>{{ user.email }}</span>
-          <ion-button fill="clear" size="small" color="danger" @click="signOut">
-            <ion-icon :icon="logOutOutline" />
-          </ion-button>
+          <div class="switch-mode">
+            <span>{{ isLogin ? 'Pas encore de compte ?' : 'Déjà un compte ?' }}</span>
+            <ion-button fill="clear" size="small" @click="isLogin = !isLogin">
+              {{ isLogin ? 'Inscription' : 'Connexion' }}
+            </ion-button>
+          </div>
         </div>
 
         <!-- Footer -->
-        <div class="login-footer">
-          <p>Projet Cloud S5 - ITU</p>
-        </div>
+        <p class="footer-text">Projet Cloud S5 - ITU Promotion 17</p>
       </div>
 
-      <!-- Toast -->
       <ion-toast
-        :is-open="toastOpen"
+        :is-open="toastVisible"
         :message="toastMessage"
         :color="toastColor"
         :duration="3000"
-        @didDismiss="toastOpen = false"
         position="top"
+        @didDismiss="toastVisible = false"
       />
     </ion-content>
   </ion-page>
@@ -94,248 +88,257 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import {
-  IonPage, IonContent, IonItem, IonInput, IonButton,
-  IonIcon, IonSpinner, IonToast,
+  IonPage, IonContent, IonInput, IonButton, IonIcon, IonSpinner, IonToast
 } from '@ionic/vue';
 import {
   constructOutline, mailOutline, lockClosedOutline,
-  eyeOutline, eyeOffOutline, checkmarkCircleOutline, logOutOutline,
+  eyeOutline, eyeOffOutline, alertCircleOutline
 } from 'ionicons/icons';
 import { auth } from '@/Firebase/FirebaseConfig';
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  onAuthStateChanged,
-  User,
+  onAuthStateChanged
 } from 'firebase/auth';
 
 const router = useRouter();
 
-// Form
+// State
 const email = ref('');
 const password = ref('');
 const showPassword = ref(false);
-
-// State
+const isLogin = ref(true);
 const loading = ref(false);
-const action = ref('');
-const user = ref<User | null>(null);
+const errorMessage = ref('');
 
 // Toast
-const toastOpen = ref(false);
+const toastVisible = ref(false);
 const toastMessage = ref('');
 const toastColor = ref('success');
 
-const showToast = (msg: string, color: string = 'success') => {
-  toastMessage.value = msg;
+const showToast = (message: string, color = 'success') => {
+  toastMessage.value = message;
   toastColor.value = color;
-  toastOpen.value = true;
+  toastVisible.value = true;
 };
 
-const validateForm = (): boolean => {
-  if (!email.value || !password.value) {
-    showToast('Veuillez remplir tous les champs', 'warning');
-    return false;
+const handleSubmit = async () => {
+  errorMessage.value = '';
+  
+  // Validation
+  if (!email.value.trim()) {
+    errorMessage.value = 'Veuillez entrer votre email';
+    return;
   }
   if (!email.value.includes('@')) {
-    showToast('Email invalide', 'warning');
-    return false;
+    errorMessage.value = 'Email invalide';
+    return;
   }
   if (password.value.length < 6) {
-    showToast('Le mot de passe doit contenir au moins 6 caractères', 'warning');
-    return false;
+    errorMessage.value = 'Mot de passe: 6 caractères minimum';
+    return;
   }
-  return true;
-};
-
-const signUp = async () => {
-  if (!validateForm()) return;
 
   loading.value = true;
-  action.value = 'signup';
 
   try {
-    await createUserWithEmailAndPassword(auth, email.value, password.value);
-    showToast('Compte créé avec succès !');
-    email.value = '';
-    password.value = '';
-    setTimeout(() => router.replace('/tabs/map'), 1000);
+    if (isLogin.value) {
+      await signInWithEmailAndPassword(auth, email.value, password.value);
+      showToast('Connexion réussie !');
+    } else {
+      await createUserWithEmailAndPassword(auth, email.value, password.value);
+      showToast('Compte créé avec succès !');
+    }
+    setTimeout(() => router.replace('/tabs/map'), 500);
   } catch (error: any) {
-    const msg = error.code === 'auth/email-already-in-use' 
-      ? 'Cet email est déjà utilisé'
-      : error.message;
-    showToast(msg, 'danger');
+    console.error('Auth error:', error);
+    switch (error.code) {
+      case 'auth/email-already-in-use':
+        errorMessage.value = 'Cet email est déjà utilisé';
+        break;
+      case 'auth/invalid-credential':
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+        errorMessage.value = 'Email ou mot de passe incorrect';
+        break;
+      case 'auth/too-many-requests':
+        errorMessage.value = 'Trop de tentatives. Réessayez plus tard';
+        break;
+      case 'auth/network-request-failed':
+        errorMessage.value = 'Erreur réseau. Vérifiez votre connexion';
+        break;
+      case 'auth/configuration-not-found':
+        errorMessage.value = 'Authentification non configurée sur Firebase';
+        break;
+      default:
+        errorMessage.value = error.message || 'Erreur de connexion';
+    }
   } finally {
     loading.value = false;
-    action.value = '';
-  }
-};
-
-const signIn = async () => {
-  if (!validateForm()) return;
-
-  loading.value = true;
-  action.value = 'signin';
-
-  try {
-    await signInWithEmailAndPassword(auth, email.value, password.value);
-    showToast('Connexion réussie !');
-    email.value = '';
-    password.value = '';
-    setTimeout(() => router.replace('/tabs/map'), 1000);
-  } catch (error: any) {
-    const msg = error.code === 'auth/invalid-credential'
-      ? 'Email ou mot de passe incorrect'
-      : error.message;
-    showToast(msg, 'danger');
-  } finally {
-    loading.value = false;
-    action.value = '';
-  }
-};
-
-const signOut = async () => {
-  try {
-    await firebaseSignOut(auth);
-    showToast('Déconnexion réussie');
-  } catch (error: any) {
-    showToast(error.message, 'danger');
   }
 };
 
 onMounted(() => {
-  onAuthStateChanged(auth, (currentUser) => {
-    user.value = currentUser;
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      router.replace('/tabs/map');
+    }
   });
 });
 </script>
 
 <style scoped>
-.login-content {
-  --background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+.auth-content {
+  --background: #f5f7fa;
 }
 
-.login-wrapper {
+.auth-container {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   min-height: 100%;
-  padding: 24px;
+  padding: 40px 20px;
 }
 
-.login-header {
+.auth-header {
   text-align: center;
-  margin-bottom: 40px;
-  color: white;
+  margin-bottom: 32px;
 }
 
-.logo-container {
-  width: 80px;
-  height: 80px;
-  background: linear-gradient(135deg, #e94560 0%, #ff6b6b 100%);
-  border-radius: 20px;
+.logo {
+  width: 72px;
+  height: 72px;
+  background: linear-gradient(135deg, #3880ff 0%, #5260ff 100%);
+  border-radius: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
   margin: 0 auto 16px;
-  box-shadow: 0 8px 32px rgba(233, 69, 96, 0.3);
+  box-shadow: 0 8px 24px rgba(56, 128, 255, 0.3);
 }
 
-.logo-icon {
-  font-size: 2.5rem;
+.logo ion-icon {
+  font-size: 36px;
   color: white;
 }
 
-.login-header h1 {
-  font-size: 1.8rem;
+.auth-header h1 {
+  font-size: 26px;
   font-weight: 700;
+  color: #1a1a2e;
   margin: 0;
 }
 
-.login-header p {
-  font-size: 1rem;
-  opacity: 0.7;
+.subtitle {
+  color: #666;
+  font-size: 14px;
   margin: 4px 0 0;
 }
 
-.login-form {
+.auth-card {
   width: 100%;
-  max-width: 360px;
+  max-width: 380px;
+  background: white;
+  border-radius: 16px;
+  padding: 28px 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
-.form-item {
-  --background: rgba(255, 255, 255, 0.1);
-  --border-radius: 12px;
-  --padding-start: 16px;
-  --padding-end: 16px;
+.auth-card h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0 0 24px;
+  text-align: center;
+}
+
+.form-group {
+  margin-bottom: 18px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.input-wrapper {
+  display: flex;
+  align-items: center;
+  background: #f5f7fa;
+  border: 2px solid #e8ecf0;
+  border-radius: 10px;
+  padding: 0 12px;
+  transition: border-color 0.2s;
+}
+
+.input-wrapper:focus-within {
+  border-color: #3880ff;
+}
+
+.input-wrapper ion-icon {
+  font-size: 20px;
+  color: #999;
+  margin-right: 10px;
+}
+
+.input-wrapper ion-input {
+  --padding-start: 0;
+  --padding-end: 0;
+  flex: 1;
+}
+
+.input-wrapper ion-button {
+  --padding-start: 8px;
+  --padding-end: 8px;
+  margin: 0;
+}
+
+.error-message {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff2f2;
+  color: #e74c3c;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
   margin-bottom: 16px;
-  border-radius: 12px;
-  backdrop-filter: blur(10px);
 }
 
-.form-item ion-input {
-  --color: white;
-  --placeholder-color: rgba(255, 255, 255, 0.5);
+.error-message ion-icon {
+  font-size: 18px;
+  flex-shrink: 0;
 }
 
-.login-button {
-  --background: linear-gradient(135deg, #e94560 0%, #ff6b6b 100%);
-  --border-radius: 12px;
-  --box-shadow: 0 4px 16px rgba(233, 69, 96, 0.3);
-  height: 52px;
+.primary-btn {
+  --background: linear-gradient(135deg, #3880ff 0%, #5260ff 100%);
+  --border-radius: 10px;
+  height: 48px;
   font-weight: 600;
   margin-top: 8px;
 }
 
-.divider {
+.switch-mode {
   display: flex;
   align-items: center;
-  margin: 24px 0;
-  color: rgba(255, 255, 255, 0.5);
+  justify-content: center;
+  margin-top: 20px;
+  font-size: 13px;
+  color: #666;
 }
 
-.divider::before,
-.divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.divider span {
-  padding: 0 16px;
-  font-size: 0.85rem;
-}
-
-.signup-button {
-  --border-color: rgba(255, 255, 255, 0.3);
-  --color: white;
-  --border-radius: 12px;
-  height: 52px;
+.switch-mode ion-button {
+  --color: #3880ff;
   font-weight: 600;
 }
 
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 24px;
-  padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  color: white;
-}
-
-.user-info ion-icon {
-  font-size: 1.2rem;
-}
-
-.login-footer {
+.footer-text {
   margin-top: auto;
-  padding-top: 40px;
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 0.8rem;
+  padding-top: 32px;
+  font-size: 12px;
+  color: #999;
 }
 </style>

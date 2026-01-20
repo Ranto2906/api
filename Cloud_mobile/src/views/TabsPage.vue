@@ -2,7 +2,7 @@
   <ion-page>
     <ion-tabs>
       <ion-router-outlet></ion-router-outlet>
-      <ion-tab-bar slot="bottom" color="primary">
+      <ion-tab-bar slot="bottom">
         <ion-tab-button tab="map" href="/tabs/map">
           <ion-icon :icon="mapOutline" />
           <ion-label>Carte</ion-label>
@@ -37,8 +37,23 @@ const handleLogout = async () => {
 
 <style scoped>
 ion-tab-bar {
-  --background: var(--ion-color-primary);
-  --color: rgba(255, 255, 255, 0.7);
-  --color-selected: white;
+  --background: #ffffff;
+  --border: 1px solid #e0e0e0;
+  height: 56px;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+}
+
+ion-tab-button {
+  --color: #999;
+  --color-selected: #3880ff;
+}
+
+ion-tab-button ion-icon {
+  font-size: 22px;
+}
+
+ion-tab-button ion-label {
+  font-size: 11px;
+  font-weight: 500;
 }
 </style>

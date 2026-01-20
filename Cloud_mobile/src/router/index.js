@@ -6,11 +6,15 @@ import { auth } from "@/Firebase/FirebaseConfig";
 const routes = [
   {
     path: "/",
-    redirect: "/login"
+    redirect: "/map"
   },
   {
     path: "/login",
-    component: () => import("@/views/LoginPage.vue")
+    component: () => import("@/views/AuthPage.vue")
+  },
+  {
+    path: "/map",
+    component: () => import("@/views/MapPage.vue")
   },
   {
     path: "/tabs/",
@@ -19,11 +23,11 @@ const routes = [
     children: [
       {
         path: "",
-        redirect: "/tabs/tab1"
+        redirect: "/tabs/map"
       },
       {
-        path: "tab1",
-        component: () => import("@/views/Tab1Page.vue")
+        path: "map",
+        component: () => import("@/views/MapPage.vue")
       }
     ]
   }
@@ -44,17 +48,18 @@ const waitForAuthReady = () =>
 
 router.beforeEach(async (to) => {
   const isAuthRoute = to.path === "/login";
-  if (auth.currentUser) {
-    if (isAuthRoute) {
-      return "/tabs/tab1";
-    }
-    return true;
+  
+  // Si l'utilisateur est connecté et va sur login, redirige vers la carte
+  if (auth.currentUser && isAuthRoute) {
+    return "/map";
   }
 
-  await waitForAuthReady();
-
+  // Routes protégées (tabs/) nécessitent authentification
   if (to.matched.some((record) => record.meta.requiresAuth)) {
-    return "/login";
+    await waitForAuthReady();
+    if (!auth.currentUser) {
+      return "/login";
+    }
   }
 
   return true;

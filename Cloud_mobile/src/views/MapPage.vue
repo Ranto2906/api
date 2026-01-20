@@ -1,96 +1,109 @@
 <template>
   <ion-page>
     <ion-header class="ion-no-border">
-      <ion-toolbar color="primary">
+      <ion-toolbar>
         <ion-title>
-          <div class="header-title">
+          <div class="header-content">
             <ion-icon :icon="mapOutline" />
-            <span>Travaux Routiers</span>
+            <span>Travaux Routiers - Tana</span>
           </div>
         </ion-title>
         <ion-buttons slot="end">
           <ion-button @click="refreshData" :disabled="loading">
             <ion-icon :icon="refreshOutline" />
           </ion-button>
+          <!-- Bouton connexion/déconnexion -->
+          <ion-button v-if="!currentUser" @click="goToLogin">
+            <ion-icon :icon="personOutline" />
+          </ion-button>
+          <ion-button v-else @click="handleLogout" color="danger">
+            <ion-icon :icon="logOutOutline" />
+          </ion-button>
         </ion-buttons>
       </ion-toolbar>
     </ion-header>
 
-    <ion-content :fullscreen="true">
-      <!-- Tableau Récapitulatif -->
-      <div class="recap-container">
-        <div class="recap-card">
-          <div class="recap-item">
-            <div class="recap-value">{{ recap.nbSignalements }}</div>
-            <div class="recap-label">Signalements</div>
+    <ion-content :fullscreen="true" class="map-content">
+      <!-- Tableau Récapitulatif (selon le sujet) -->
+      <div class="recap-section">
+        <h3 class="section-title">Récapitulatif</h3>
+        <div class="recap-grid">
+          <div class="recap-box">
+            <div class="recap-number">{{ recap.nbSignalements }}</div>
+            <div class="recap-label">Nb de points</div>
           </div>
-          <div class="recap-divider"></div>
-          <div class="recap-item">
-            <div class="recap-value">{{ formatSurface(recap.surfaceTotale) }}</div>
-            <div class="recap-label">Surface (m²)</div>
+          <div class="recap-box">
+            <div class="recap-number">{{ formatNumber(recap.surfaceTotale) }}</div>
+            <div class="recap-label">Surface totale (m²)</div>
           </div>
-          <div class="recap-divider"></div>
-          <div class="recap-item">
-            <div class="recap-value">{{ recap.avancementPct }}%</div>
+          <div class="recap-box highlight">
+            <div class="recap-number">{{ recap.avancementPct }}%</div>
             <div class="recap-label">Avancement</div>
+            <div class="progress-bar">
+              <div class="progress-fill" :style="{ width: recap.avancementPct + '%' }"></div>
+            </div>
           </div>
-          <div class="recap-divider"></div>
-          <div class="recap-item">
-            <div class="recap-value">{{ formatBudget(recap.budgetTotal) }}</div>
-            <div class="recap-label">Budget (MGA)</div>
+          <div class="recap-box">
+            <div class="recap-number">{{ formatBudget(recap.budgetTotal) }}</div>
+            <div class="recap-label">Budget total (MGA)</div>
           </div>
         </div>
       </div>
 
       <!-- Filtres -->
-      <div class="filter-container">
-        <ion-segment v-model="viewMode" mode="ios">
+      <div class="filter-section">
+        <!-- Filtre "Mes signalements" visible uniquement si connecté -->
+        <ion-segment v-if="currentUser" v-model="viewMode" mode="ios" class="view-segment">
           <ion-segment-button value="all">
-            <ion-label>Tous</ion-label>
+            <ion-label>Tous les signalements</ion-label>
           </ion-segment-button>
           <ion-segment-button value="mine">
             <ion-label>Mes signalements</ion-label>
           </ion-segment-button>
         </ion-segment>
 
-        <ion-chip-group>
-          <ion-chip 
-            v-for="status in statusOptions" 
-            :key="status.value"
-            :outline="statusFilter !== status.value"
-            :color="status.color"
-            @click="statusFilter = status.value"
+        <!-- Message pour visiteur -->
+        <div v-if="!currentUser" class="visitor-info">
+          <ion-icon :icon="informationCircleOutline" />
+          <span>Connectez-vous pour signaler des problèmes</span>
+          <ion-button fill="clear" size="small" @click="goToLogin">Se connecter</ion-button>
+        </div>
+
+        <div class="status-filters">
+          <button 
+            v-for="opt in statusOptions" 
+            :key="opt.value"
+            :class="['status-chip', { active: statusFilter === opt.value }]"
+            :style="statusFilter === opt.value ? { background: opt.bg, color: opt.color, borderColor: opt.color } : {}"
+            @click="statusFilter = opt.value"
           >
-            <ion-icon :icon="status.icon" />
-            <ion-label>{{ status.label }}</ion-label>
-          </ion-chip>
-        </ion-chip-group>
+            <span class="chip-dot" :style="{ background: opt.color }"></span>
+            {{ opt.label }}
+          </button>
+        </div>
       </div>
 
       <!-- Carte Leaflet -->
-      <div class="map-container">
-        <div ref="mapElement" class="map"></div>
-        
-        <!-- Bouton de localisation -->
-        <ion-fab vertical="bottom" horizontal="end" slot="fixed" class="location-fab">
-          <ion-fab-button size="small" color="light" @click="centerOnMyLocation">
-            <ion-icon :icon="locateOutline" />
-          </ion-fab-button>
-        </ion-fab>
+      <div class="map-wrapper">
+        <div ref="mapContainer" class="leaflet-map"></div>
 
-        <!-- Bouton Signaler -->
-        <ion-fab vertical="bottom" horizontal="center" slot="fixed" class="signal-fab">
-          <ion-fab-button color="danger" @click="openSignalementModal">
-            <ion-icon :icon="addOutline" />
-          </ion-fab-button>
-        </ion-fab>
+        <!-- Bouton localisation -->
+        <button class="fab-btn location-btn" @click="centerOnMyLocation">
+          <ion-icon :icon="locateOutline" />
+        </button>
+
+        <!-- Bouton signaler (utilisateur connecté uniquement) -->
+        <button v-if="currentUser" class="fab-btn signal-btn" @click="openSignalementModal">
+          <ion-icon :icon="addOutline" />
+          <span>Signaler</span>
+        </button>
       </div>
 
-      <!-- Modal de création de signalement -->
-      <ion-modal :is-open="isModalOpen" @didDismiss="closeModal" :breakpoints="[0, 0.5, 0.9]" :initialBreakpoint="0.5">
+      <!-- Modal nouveau signalement -->
+      <ion-modal :is-open="showModal" @didDismiss="closeModal">
         <ion-header>
-          <ion-toolbar color="danger">
-            <ion-title>Nouveau Signalement</ion-title>
+          <ion-toolbar color="primary">
+            <ion-title>Nouveau signalement</ion-title>
             <ion-buttons slot="end">
               <ion-button @click="closeModal">
                 <ion-icon :icon="closeOutline" />
@@ -98,113 +111,119 @@
             </ion-buttons>
           </ion-toolbar>
         </ion-header>
-        <ion-content class="ion-padding">
-          <div class="modal-content">
-            <div class="location-preview">
-              <ion-icon :icon="locationOutline" color="danger" />
-              <div class="location-coords">
-                <span>Lat: {{ selectedLocation?.lat.toFixed(6) }}</span>
-                <span>Lng: {{ selectedLocation?.lng.toFixed(6) }}</span>
+        <ion-content class="ion-padding modal-content">
+          <div class="modal-body">
+            <div class="location-info">
+              <ion-icon :icon="locationOutline" />
+              <div>
+                <strong>Position sélectionnée</strong>
+                <p v-if="selectedPosition">
+                  {{ selectedPosition.lat.toFixed(5) }}, {{ selectedPosition.lng.toFixed(5) }}
+                </p>
+                <p v-else class="hint">Cliquez sur la carte pour choisir</p>
               </div>
             </div>
 
+            <p class="modal-instruction">
+              Appuyez sur la carte derrière pour définir l'emplacement du problème routier.
+            </p>
+
             <ion-button 
               expand="block" 
-              color="primary"
-              @click="submitNewSignalement"
-              :disabled="submitting || !selectedLocation"
+              @click="submitSignalementHandler"
+              :disabled="!selectedPosition || submitting"
+              class="submit-btn"
             >
-              <ion-spinner v-if="submitting" name="crescent" />
-              <span v-else>
+              <ion-spinner v-if="submitting" name="dots" />
+              <template v-else>
                 <ion-icon :icon="sendOutline" slot="start" />
                 Envoyer le signalement
-              </span>
+              </template>
             </ion-button>
-
-            <p class="modal-hint">
-              Appuyez sur la carte pour changer l'emplacement du signalement.
-            </p>
           </div>
         </ion-content>
       </ion-modal>
 
-      <!-- Toast de notification -->
+      <!-- Toast -->
       <ion-toast
-        :is-open="toastOpen"
+        :is-open="toastVisible"
         :message="toastMessage"
         :color="toastColor"
         :duration="3000"
-        @didDismiss="toastOpen = false"
         position="top"
+        @didDismiss="toastVisible = false"
       />
 
-      <!-- Loading -->
       <ion-loading :is-open="loading" message="Chargement..." />
     </ion-content>
   </ion-page>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   IonPage, IonHeader, IonToolbar, IonTitle, IonContent,
   IonButton, IonButtons, IonIcon, IonSegment, IonSegmentButton,
-  IonLabel, IonChip, IonFab, IonFabButton, IonModal,
-  IonSpinner, IonToast, IonLoading,
-} from "@ionic/vue";
+  IonLabel, IonModal, IonSpinner, IonToast, IonLoading
+} from '@ionic/vue';
 import {
   mapOutline, refreshOutline, locateOutline, addOutline,
   closeOutline, locationOutline, sendOutline,
-  alertCircleOutline, timeOutline, checkmarkCircleOutline, ellipseOutline,
-} from "ionicons/icons";
-import L from "leaflet";
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
-import { auth } from "@/Firebase/FirebaseConfig";
+  personOutline, logOutOutline, informationCircleOutline
+} from 'ionicons/icons';
+import L from 'leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+import { auth } from '@/Firebase/FirebaseConfig';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import {
   fetchAllSignalements,
   fetchMySignalements,
   prepareSignalementPayload,
   submitSignalement,
-  calculateRecapitulatif,
-} from "@/services/signalement";
-import type { SignalementRecord, RecapitulatifData, SignalementStatus } from "@/types/signalement";
-import { STATUS_COLORS } from "@/types/signalement";
+  calculateRecapitulatif
+} from '@/services/signalement';
+import type { SignalementRecord, RecapitulatifData, SignalementStatus } from '@/types/signalement';
 
-// Refs
-const mapElement = ref<HTMLElement | null>(null);
-let mapInstance: L.Map | null = null;
-let signalementLayer: L.LayerGroup | null = null;
-let selectedMarker: L.Marker | null = null;
+const router = useRouter();
+
+// Leaflet map refs
+const mapContainer = ref<HTMLElement | null>(null);
+let map: L.Map | null = null;
+let markersLayer: L.LayerGroup | null = null;
+let selectionMarker: L.Marker | null = null;
 
 // State
 const loading = ref(false);
 const submitting = ref(false);
-const isModalOpen = ref(false);
-const viewMode = ref<"all" | "mine">("all");
-const statusFilter = ref<SignalementStatus | "all">("all");
-const selectedLocation = ref<{ lat: number; lng: number } | null>(null);
+const showModal = ref(false);
+const viewMode = ref<'all' | 'mine'>('all');
+const statusFilter = ref<SignalementStatus | 'all'>('all');
+const selectedPosition = ref<{ lat: number; lng: number } | null>(null);
+const currentUser = ref<User | null>(null);
+
 const allSignalements = ref<SignalementRecord[]>([]);
 const mySignalements = ref<SignalementRecord[]>([]);
 
 // Toast
-const toastOpen = ref(false);
-const toastMessage = ref("");
-const toastColor = ref("success");
+const toastVisible = ref(false);
+const toastMessage = ref('');
+const toastColor = ref('success');
 
-// Status options pour les filtres
+// Status filter options
 const statusOptions = [
-  { value: "all", label: "Tous", color: "medium", icon: ellipseOutline },
-  { value: "nouveau", label: "Nouveau", color: "danger", icon: alertCircleOutline },
-  { value: "en_cours", label: "En cours", color: "warning", icon: timeOutline },
-  { value: "termine", label: "Terminé", color: "success", icon: checkmarkCircleOutline },
+  { value: 'all' as const, label: 'Tous', color: '#666', bg: '#f0f0f0' },
+  { value: 'nouveau' as const, label: 'Nouveau', color: '#e74c3c', bg: '#fdecea' },
+  { value: 'en_cours' as const, label: 'En cours', color: '#f39c12', bg: '#fef5e7' },
+  { value: 'termine' as const, label: 'Terminé', color: '#27ae60', bg: '#e8f8f0' }
 ];
 
 // Computed
 const filteredSignalements = computed(() => {
-  const source = viewMode.value === "mine" ? mySignalements.value : allSignalements.value;
-  if (statusFilter.value === "all") return source;
+  const source = viewMode.value === 'mine' ? mySignalements.value : allSignalements.value;
+  if (statusFilter.value === 'all') return source;
   return source.filter(s => s.status === statusFilter.value);
 });
 
@@ -212,54 +231,75 @@ const recap = computed<RecapitulatifData>(() => {
   return calculateRecapitulatif(filteredSignalements.value);
 });
 
-// Formatters
-const formatSurface = (value: number) => {
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return value.toFixed(0);
+// Helpers
+const formatNumber = (n: number) => n.toLocaleString('fr-FR');
+const formatBudget = (n: number) => {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(0) + 'k';
+  return n.toString();
 };
 
-const formatBudget = (value: number) => {
-  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-  if (value >= 1000) return `${(value / 1000).toFixed(0)}k`;
-  return value.toFixed(0);
+const formatDate = (d: Date | null) => {
+  if (!d) return 'N/A';
+  return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(d);
 };
 
-const formatDate = (date: Date | null) => {
-  if (!date) return "N/A";
-  return new Intl.DateTimeFormat("fr-FR", { dateStyle: "medium" }).format(date);
-};
-
-// Methods
-const showToast = (message: string, color: string = "success") => {
-  toastMessage.value = message;
+const showToast = (msg: string, color = 'success') => {
+  toastMessage.value = msg;
   toastColor.value = color;
-  toastOpen.value = true;
+  toastVisible.value = true;
 };
 
-const closeModal = () => {
-  isModalOpen.value = false;
-  if (selectedMarker) {
-    selectedMarker.remove();
-    selectedMarker = null;
+// Navigation
+const goToLogin = () => {
+  router.push('/login');
+};
+
+const handleLogout = async () => {
+  try {
+    await signOut(auth);
+    viewMode.value = 'all'; // Reset to all signalements view
+    showToast('Déconnexion réussie');
+  } catch (error) {
+    console.error('Erreur de déconnexion:', error);
   }
 };
 
-const openSignalementModal = () => {
-  if (!auth.currentUser) {
-    showToast("Connectez-vous pour signaler un problème", "warning");
-    return;
-  }
-  // Utiliser le centre de la carte par défaut
-  if (mapInstance) {
-    const center = mapInstance.getCenter();
-    selectedLocation.value = { lat: center.lat, lng: center.lng };
-    updateSelectedMarker(center.lat, center.lng);
-  }
-  isModalOpen.value = true;
+// Map functions
+const initMap = () => {
+  if (!mapContainer.value) return;
+
+  // Fix default marker icons
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: markerIcon2x,
+    iconUrl: markerIcon,
+    shadowUrl: markerShadow
+  });
+
+  // Create map centered on Antananarivo
+  map = L.map(mapContainer.value).setView([-18.8792, 47.5079], 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+    maxZoom: 19
+  }).addTo(map);
+
+  markersLayer = L.layerGroup().addTo(map);
+
+  // Click handler for placing signalement
+  map.on('click', (e: L.LeafletMouseEvent) => {
+    if (showModal.value) {
+      placeSelectionMarker(e.latlng.lat, e.latlng.lng);
+    }
+  });
+
+  setTimeout(() => map?.invalidateSize(), 200);
 };
 
-const updateSelectedMarker = (lat: number, lng: number) => {
-  if (!mapInstance) return;
+const placeSelectionMarker = (lat: number, lng: number) => {
+  if (!map) return;
+
+  selectedPosition.value = { lat, lng };
 
   const redIcon = L.icon({
     iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
@@ -270,46 +310,70 @@ const updateSelectedMarker = (lat: number, lng: number) => {
     shadowSize: [41, 41]
   });
 
-  if (selectedMarker) {
-    selectedMarker.setLatLng([lat, lng]);
+  if (selectionMarker) {
+    selectionMarker.setLatLng([lat, lng]);
   } else {
-    selectedMarker = L.marker([lat, lng], { icon: redIcon }).addTo(mapInstance);
+    selectionMarker = L.marker([lat, lng], { icon: redIcon }).addTo(map);
   }
-  selectedLocation.value = { lat, lng };
 };
 
-const submitNewSignalement = async () => {
-  if (!selectedLocation.value || !auth.currentUser) return;
+const updateMarkers = () => {
+  if (!markersLayer) return;
+  markersLayer.clearLayers();
 
-  submitting.value = true;
-  try {
-    const payload = prepareSignalementPayload(
-      selectedLocation.value.lat,
-      selectedLocation.value.lng
-    );
-    await submitSignalement(payload);
-    showToast("Signalement envoyé avec succès !");
-    closeModal();
-    await refreshData();
-  } catch (error: any) {
-    showToast(error.message || "Erreur lors de l'envoi", "danger");
-  } finally {
-    submitting.value = false;
-  }
+  filteredSignalements.value.forEach(item => {
+    if (item.latitude == null || item.longitude == null) return;
+
+    // Couleur selon statut
+    const colors: Record<string, string> = {
+      nouveau: '#e74c3c',
+      en_cours: '#f39c12',
+      termine: '#27ae60'
+    };
+    const color = colors[item.status] || '#666';
+
+    const icon = L.divIcon({
+      className: 'custom-marker',
+      html: `<div style="
+        background: ${color};
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 3px solid white;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      "></div>`,
+      iconSize: [20, 20],
+      iconAnchor: [10, 10]
+    });
+
+    // Popup avec infos du sujet: date, status, surface, budget, entreprise
+    const popup = `
+      <div style="min-width: 180px;">
+        <div style="background: ${color}; color: white; padding: 8px 12px; margin: -10px -10px 8px; border-radius: 4px 4px 0 0; font-weight: 600;">
+          ${item.statusLabel || item.status}
+        </div>
+        <p style="margin: 4px 0;"><strong>Date:</strong> ${formatDate(item.dateSignalement)}</p>
+        <p style="margin: 4px 0;"><strong>Surface:</strong> ${item.surfaceM2 || 'N/A'} m²</p>
+        <p style="margin: 4px 0;"><strong>Budget:</strong> ${item.budget ? item.budget.toLocaleString() + ' MGA' : 'N/A'}</p>
+        <p style="margin: 4px 0;"><strong>Entreprise:</strong> ${item.entrepriseNom || 'Non assignée'}</p>
+      </div>
+    `;
+
+    L.marker([item.latitude, item.longitude], { icon })
+      .bindPopup(popup)
+      .addTo(markersLayer as L.LayerGroup);
+  });
 };
 
 const centerOnMyLocation = () => {
-  if (!navigator.geolocation || !mapInstance) {
-    showToast("Géolocalisation non disponible", "warning");
+  if (!navigator.geolocation || !map) {
+    showToast('Géolocalisation non disponible', 'warning');
     return;
   }
 
   navigator.geolocation.getCurrentPosition(
-    (position) => {
-      const { latitude, longitude } = position.coords;
-      mapInstance?.setView([latitude, longitude], 16);
-    },
-    () => showToast("Impossible d'obtenir votre position", "danger")
+    pos => map?.setView([pos.coords.latitude, pos.coords.longitude], 16),
+    () => showToast('Impossible d\'obtenir votre position', 'danger')
   );
 };
 
@@ -317,236 +381,358 @@ const refreshData = async () => {
   loading.value = true;
   try {
     allSignalements.value = await fetchAllSignalements();
-    if (auth.currentUser) {
-      mySignalements.value = await fetchMySignalements(auth.currentUser.uid);
+    if (currentUser.value) {
+      mySignalements.value = await fetchMySignalements(currentUser.value.uid);
     }
-    refreshMarkers();
-  } catch (error: any) {
-    showToast("Erreur de chargement", "danger");
+    updateMarkers();
+  } catch (err: any) {
+    showToast('Erreur de chargement des données', 'danger');
   } finally {
     loading.value = false;
   }
 };
 
-const refreshMarkers = () => {
-  if (!mapInstance) return;
-
-  if (!signalementLayer) {
-    signalementLayer = L.layerGroup().addTo(mapInstance);
+// Modal handlers
+const openSignalementModal = () => {
+  if (!currentUser.value) {
+    showToast('Connectez-vous pour signaler', 'warning');
+    return;
   }
-  signalementLayer.clearLayers();
+  if (map) {
+    const center = map.getCenter();
+    placeSelectionMarker(center.lat, center.lng);
+  }
+  showModal.value = true;
+};
 
-  filteredSignalements.value.forEach((item) => {
-    if (item.latitude == null || item.longitude == null) return;
+const closeModal = () => {
+  showModal.value = false;
+  if (selectionMarker) {
+    selectionMarker.remove();
+    selectionMarker = null;
+  }
+  selectedPosition.value = null;
+};
 
-    // Créer un marqueur coloré selon le statut
-    const color = item.status === "nouveau" ? "red" : 
-                  item.status === "en_cours" ? "orange" : "green";
-    
-    const icon = L.divIcon({
-      className: 'custom-marker',
-      html: `<div style="background-color: ${item.statusCouleur}; width: 24px; height: 24px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"></div>`,
-      iconSize: [24, 24],
-      iconAnchor: [12, 12],
-    });
+const submitSignalementHandler = async () => {
+  if (!selectedPosition.value || !currentUser.value) return;
 
-    const popupContent = `
-      <div class="popup-content">
-        <div class="popup-header" style="background: ${item.statusCouleur}">
-          <strong>${item.statusLabel}</strong>
-        </div>
-        <div class="popup-body">
-          <p><strong>Date:</strong> ${formatDate(item.dateSignalement)}</p>
-          ${item.surfaceM2 ? `<p><strong>Surface:</strong> ${item.surfaceM2} m²</p>` : ''}
-          ${item.budget ? `<p><strong>Budget:</strong> ${item.budget.toLocaleString()} MGA</p>` : ''}
-          ${item.entrepriseNom ? `<p><strong>Entreprise:</strong> ${item.entrepriseNom}</p>` : ''}
-          ${item.commentaire ? `<p><em>${item.commentaire}</em></p>` : ''}
-        </div>
-      </div>
-    `;
-
-    L.marker([item.latitude, item.longitude], { icon })
-      .bindPopup(popupContent, { className: 'custom-popup' })
-      .addTo(signalementLayer as L.LayerGroup);
-  });
+  submitting.value = true;
+  try {
+    const payload = prepareSignalementPayload(
+      selectedPosition.value.lat,
+      selectedPosition.value.lng
+    );
+    await submitSignalement(payload);
+    showToast('Signalement envoyé avec succès !');
+    closeModal();
+    await refreshData();
+  } catch (err: any) {
+    showToast(err.message || 'Erreur lors de l\'envoi', 'danger');
+  } finally {
+    submitting.value = false;
+  }
 };
 
 // Lifecycle
 onMounted(async () => {
-  if (!mapElement.value) return;
-
-  // Fix Leaflet icons
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: markerIcon2x,
-    iconUrl: markerIcon,
-    shadowUrl: markerShadow,
+  onAuthStateChanged(auth, user => {
+    currentUser.value = user;
   });
 
-  // Initialiser la carte centrée sur Antananarivo
-  mapInstance = L.map(mapElement.value).setView([-18.8792, 47.5079], 13);
-  
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: '© OpenStreetMap',
-    maxZoom: 19,
-  }).addTo(mapInstance);
-
-  // Clic sur la carte = sélection de position
-  mapInstance.on("click", (e: L.LeafletMouseEvent) => {
-    if (isModalOpen.value) {
-      updateSelectedMarker(e.latlng.lat, e.latlng.lng);
-    }
-  });
-
-  setTimeout(() => mapInstance?.invalidateSize(), 200);
-
+  initMap();
   await refreshData();
 });
 
 watch([viewMode, statusFilter], () => {
-  refreshMarkers();
+  updateMarkers();
 });
 
 onBeforeUnmount(() => {
-  mapInstance?.remove();
-  mapInstance = null;
+  map?.remove();
+  map = null;
 });
 </script>
 
 <style scoped>
-.header-title {
+.map-content {
+  --background: #f5f7fa;
+}
+
+ion-toolbar {
+  --background: white;
+  --border-width: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.header-content {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  font-size: 17px;
+  color: #1a1a2e;
 }
 
-.recap-container {
-  padding: 12px;
-  background: linear-gradient(135deg, var(--ion-color-primary) 0%, var(--ion-color-primary-shade) 100%);
+.header-content ion-icon {
+  color: #3880ff;
 }
 
-.recap-card {
-  display: flex;
-  justify-content: space-around;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 16px;
-  padding: 16px 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+/* Section Récap */
+.recap-section {
+  padding: 16px;
+  background: white;
 }
 
-.recap-item {
-  text-align: center;
-  flex: 1;
-}
-
-.recap-value {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--ion-color-primary);
-}
-
-.recap-label {
-  font-size: 0.7rem;
-  color: var(--ion-color-medium);
+.section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #666;
+  margin: 0 0 12px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-.recap-divider {
-  width: 1px;
-  background: var(--ion-color-light-shade);
+.recap-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
 }
 
-.filter-container {
-  padding: 12px;
-  background: var(--ion-background-color);
+.recap-box {
+  background: #f8f9fb;
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
 }
 
-ion-chip-group {
+.recap-box.highlight {
+  background: linear-gradient(135deg, #3880ff 0%, #5260ff 100%);
+  color: white;
+}
+
+.recap-number {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.recap-box.highlight .recap-number {
+  color: white;
+}
+
+.recap-label {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.recap-box.highlight .recap-label {
+  color: rgba(255,255,255,0.8);
+}
+
+.progress-bar {
+  height: 4px;
+  background: rgba(255,255,255,0.3);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: white;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* Filtres */
+.filter-section {
+  padding: 12px 16px;
+  background: white;
+  border-top: 1px solid #eee;
+}
+
+.view-segment {
+  --background: #f0f0f0;
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+
+ion-segment-button {
+  --indicator-color: #3880ff;
+  --color-checked: white;
+  --border-radius: 8px;
+  font-size: 13px;
+  min-height: 36px;
+}
+
+.status-filters {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
   overflow-x: auto;
   padding-bottom: 4px;
 }
 
-.map-container {
-  position: absolute;
-  top: 220px;
-  left: 0;
-  right: 0;
-  bottom: 0;
+.status-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1.5px solid #ddd;
+  border-radius: 20px;
+  background: white;
+  font-size: 12px;
+  font-weight: 500;
+  color: #666;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.map {
+.status-chip.active {
+  font-weight: 600;
+}
+
+.chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Map */
+.map-wrapper {
+  position: relative;
+  height: calc(100% - 280px);
+  min-height: 300px;
+}
+
+.leaflet-map {
   width: 100%;
   height: 100%;
 }
 
-.location-fab {
-  margin-bottom: 80px;
-  margin-right: 8px;
+.fab-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  cursor: pointer;
+  z-index: 1000;
 }
 
-.signal-fab {
-  margin-bottom: 16px;
+.location-btn {
+  bottom: 100px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  background: white;
+  color: #333;
 }
 
+.location-btn ion-icon {
+  font-size: 22px;
+}
+
+.signal-btn {
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  gap: 8px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.signal-btn ion-icon {
+  font-size: 20px;
+}
+
+/* Modal */
 .modal-content {
+  --background: #f5f7fa;
+}
+
+.modal-body {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  padding-top: 16px;
 }
 
-.location-preview {
+.location-info {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
+  background: white;
   padding: 16px;
-  background: var(--ion-color-light);
   border-radius: 12px;
 }
 
-.location-preview ion-icon {
-  font-size: 2rem;
+.location-info ion-icon {
+  font-size: 32px;
+  color: #e74c3c;
 }
 
-.location-coords {
-  display: flex;
-  flex-direction: column;
+.location-info strong {
+  font-size: 14px;
+  color: #333;
+}
+
+.location-info p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #666;
   font-family: monospace;
-  font-size: 0.9rem;
 }
 
-.modal-hint {
+.location-info .hint {
+  color: #999;
+  font-style: italic;
+}
+
+.modal-instruction {
   text-align: center;
-  color: var(--ion-color-medium);
-  font-size: 0.85rem;
+  color: #888;
+  font-size: 13px;
 }
 
-:deep(.custom-popup .leaflet-popup-content-wrapper) {
-  padding: 0;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-:deep(.custom-popup .leaflet-popup-content) {
-  margin: 0;
-  min-width: 180px;
-}
-
-:deep(.popup-header) {
-  padding: 8px 12px;
-  color: white;
+.submit-btn {
+  --background: linear-gradient(135deg, #3880ff 0%, #5260ff 100%);
+  --border-radius: 10px;
+  height: 50px;
   font-weight: 600;
 }
 
-:deep(.popup-body) {
-  padding: 12px;
+/* Info visiteur */
+.visitor-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #e8f4fd;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #3880ff;
 }
 
-:deep(.popup-body p) {
-  margin: 4px 0;
-  font-size: 0.85rem;
+.visitor-info ion-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.visitor-info span {
+  flex: 1;
+}
+
+.visitor-info ion-button {
+  --color: #3880ff;
+  font-weight: 600;
 }
 </style>
