@@ -113,36 +113,72 @@ class FirebaseCollectionManager {
             { id: '2', data: { id: 2, libelle: 'En cours', couleur: '#FFA500' } },
             { id: '3', data: { id: 3, libelle: 'Terminé', couleur: '#00FF00' } }
         ]);
-        // Paramètres (IDs numériques comme PostgreSQL)
+        // Paramètres globaux (structure nom/valeur/type)
         await this.createCollection('Parametre', [
             {
                 id: '1',
                 data: {
                     id: 1,
-                    nom: 'Paramètres Visiteur',
-                    limite_tentatives: 3,
-                    duree_session: 3600,
-                    id_type_user: 1
+                    nom: 'max_tentatives_connexion',
+                    valeur: '5',
+                    type: 'number',
+                    description: 'Nombre maximum de tentatives de connexion avant blocage',
+                    date_modification: admin.firestore.Timestamp.now()
                 }
             },
             {
                 id: '2',
                 data: {
                     id: 2,
-                    nom: 'Paramètres Utilisateur',
-                    limite_tentatives: 3,
-                    duree_session: 7200,
-                    id_type_user: 2
+                    nom: 'duree_blocage_minutes',
+                    valeur: '15',
+                    type: 'number',
+                    description: 'Durée du blocage après trop de tentatives (en minutes)',
+                    date_modification: admin.firestore.Timestamp.now()
                 }
             },
             {
                 id: '3',
                 data: {
                     id: 3,
-                    nom: 'Paramètres Manager',
-                    limite_tentatives: 5,
-                    duree_session: 14400,
-                    id_type_user: 3
+                    nom: 'session_expiration_heures',
+                    valeur: '24',
+                    type: 'number',
+                    description: 'Durée de validité des sessions (en heures)',
+                    date_modification: admin.firestore.Timestamp.now()
+                }
+            },
+            {
+                id: '4',
+                data: {
+                    id: 4,
+                    nom: 'refresh_token_expiration_jours',
+                    valeur: '30',
+                    type: 'number',
+                    description: 'Durée de validité des refresh tokens (en jours)',
+                    date_modification: admin.firestore.Timestamp.now()
+                }
+            },
+            {
+                id: '5',
+                data: {
+                    id: 5,
+                    nom: 'maintenance_mode',
+                    valeur: 'false',
+                    type: 'boolean',
+                    description: 'Mode maintenance activé',
+                    date_modification: admin.firestore.Timestamp.now()
+                }
+            },
+            {
+                id: '6',
+                data: {
+                    id: 6,
+                    nom: 'app_version',
+                    valeur: '1.0.0',
+                    type: 'string',
+                    description: 'Version actuelle de l\'application',
+                    date_modification: admin.firestore.Timestamp.now()
                 }
             }
         ]);

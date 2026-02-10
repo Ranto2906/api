@@ -1,15 +1,12 @@
 /**
  * Script d'initialisation des collections Firebase
  * Crée toutes les collections et documents initiaux basés sur le schéma PostgreSQL
+ * Adapté au projet travaux_routiers avec synchronisation bidirectionnelle
  */
 /**
- * Initialise toutes les collections Firebase avec des données par défaut
+ * Initialise toutes les collections Firebase avec des données de PostgreSQL
  */
 export declare function initializeAllFirebaseCollections(): Promise<void>;
-/**
- * Supprime tous les documents placeholder créés
- */
-export declare function removePlaceholders(): Promise<void>;
 /**
  * Vérifie l'état des collections Firebase
  */

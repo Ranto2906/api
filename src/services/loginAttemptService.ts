@@ -1,152 +1,326 @@
 import { query } from '../config/database';
+import { getFirestore } from '../config/firebase';
+import { hybridDataService } from './hybridDataService';
+import * as admin from 'firebase-admin';
+import { UserService } from './userService';
 
 export interface TentativeConnexion {
   id_tentative: number;
-  id_user: number;
-  date_tentative: Date;
+  email: string;
+  ip_address?: string;
   succes: boolean;
-  adresse_ip?: string;
+  date_tentative: Date;
+  raison_echec?: string;
 }
 
 export interface Parametre {
   id_parametre: number;
   nom: string;
-  limite_tentatives: number;
-  duree_session: number;
-  id_type_user: number;
+  valeur: string;
+  type: string;
+  description?: string;
+  date_modification: Date;
 }
 
 /**
- * Service de gestion des tentatives de connexion et du blocage
+ * Service de gestion des tentatives de connexion et des paramètres
+ * Synchronisé entre PostgreSQL (local) et Firebase
  */
 export class LoginAttemptService {
-  
+
   /**
-   * Enregistre une tentative de connexion
+   * Enregistre une tentative de connexion (PostgreSQL + Firebase)
    */
-  static async recordAttempt(userId: number, success: boolean, ip?: string): Promise<void> {
-    await query(
-      `INSERT INTO TentativeConnexion (id_user, date_tentative, succes, adresse_ip)
-       VALUES ($1, NOW(), $2, $3)`,
-      [userId, success, ip || null]
+  static async recordAttempt(
+    email: string,
+    success: boolean,
+    ip?: string,
+    raisonEchec?: string
+  ): Promise<void> {
+    // 1. Enregistrer dans PostgreSQL (local)
+    const result = await query(
+      `INSERT INTO TentativeConnexion (email, ip_address, succes, raison_echec)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id_tentative, date_tentative`,
+      [email, ip || null, success, raisonEchec || null]
     );
+
+    // 2. Synchroniser vers Firebase si disponible
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (isOnline) {
+      try {
+        const db = getFirestore();
+        const tentative = result.rows[0];
+        await db.collection('TentativeConnexion').doc(tentative.id_tentative.toString()).set({
+          id: tentative.id_tentative,
+          email,
+          ip_address: ip || null,
+          succes: success,
+          date_tentative: admin.firestore.Timestamp.fromDate(tentative.date_tentative),
+          raison_echec: raisonEchec || null
+        });
+        console.log(`✅ Tentative ${tentative.id_tentative} synchronisée vers Firebase`);
+      } catch (error: any) {
+        console.warn('⚠️ Échec sync tentative vers Firebase:', error.message);
+      }
+    }
   }
 
   /**
-   * Obtient le nombre de tentatives échouées récentes pour un utilisateur
-   * (dans les dernières 15 minutes)
+   * Obtient le nombre de tentatives échouées récentes pour un email
    */
-  static async getRecentFailedAttempts(userId: number): Promise<number> {
+  static async getRecentFailedAttempts(email: string, minutes?: number): Promise<number> {
+    const duree = minutes || await this.getParameterValue('duree_blocage_minutes', 30);
+
     const result = await query(
       `SELECT COUNT(*) as count 
        FROM TentativeConnexion 
-       WHERE id_user = $1 
+       WHERE email = $1 
        AND succes = FALSE 
-       AND date_tentative > NOW() - INTERVAL '15 minutes'`,
-      [userId]
+       AND date_tentative > NOW() - ($2 || ' minutes')::INTERVAL`,
+      [email, duree]
     );
     return parseInt(result.rows[0].count, 10);
   }
 
   /**
-   * Obtient la limite de tentatives pour un type d'utilisateur
+   * Obtient la limite de tentatives depuis les paramètres
    */
-  static async getAttemptLimit(typeUserId: number): Promise<number> {
-    const result = await query(
-      `SELECT limite_tentatives FROM Parametre WHERE id_type_user = $1`,
-      [typeUserId]
-    );
-    return result.rows[0]?.limite_tentatives || 3; // Par défaut: 3
+  static async getAttemptLimit(): Promise<number> {
+    return this.getParameterValue('max_tentatives_connexion', 5);
   }
 
   /**
-   * Vérifie si un utilisateur doit être bloqué
-   * Retourne true si l'utilisateur doit être bloqué
-   * Note: Les managers (type 3) ne sont jamais bloqués
+   * Vérifie si un email doit être bloqué (trop de tentatives)
    */
-  static async shouldBlockUser(userId: number, typeUserId: number): Promise<boolean> {
-    // Les managers (type 3) ne peuvent jamais être bloqués
-    if (typeUserId === 3) {
-      return false;
-    }
-    
-    const failedAttempts = await this.getRecentFailedAttempts(userId);
-    const limit = await this.getAttemptLimit(typeUserId);
+  static async shouldBlockEmail(email: string): Promise<boolean> {
+    const blocageActif = await this.getParameterBoolean('activer_blocage_auto', true);
+    if (!blocageActif) return false;
+
+    const failedAttempts = await this.getRecentFailedAttempts(email);
+    const limit = await this.getAttemptLimit();
     return failedAttempts >= limit;
   }
 
   /**
-   * Réinitialise les tentatives de connexion d'un utilisateur
-   * (supprime les tentatives échouées)
+   * Vérifie le blocage avec les paramètres
+   * Retourne aussi si l'utilisateur est un manager (non bloçable)
    */
-  static async resetAttempts(userId: number): Promise<void> {
+  static async checkBlocking(email: string): Promise<{
+    isBlocked: boolean;
+    isManager: boolean;
+    isPermanentlyBlocked: boolean;
+    attempts: number;
+    maxAttempts: number;
+    remainingAttempts: number;
+  }> {
+    const attempts = await this.getRecentFailedAttempts(email);
+    const maxAttempts = await this.getAttemptLimit();
+
+    // Vérifier si l'utilisateur existe et est un manager
+    const user = await UserService.findByEmail(email);
+    const isManager = user?.id_type_user === 3;
+    const isPermanentlyBlocked = user?.est_bloque === true;
+
+    return {
+      isBlocked: attempts >= maxAttempts && !isManager,
+      isManager,
+      isPermanentlyBlocked,
+      attempts,
+      maxAttempts,
+      remainingAttempts: Math.max(0, maxAttempts - attempts)
+    };
+  }
+
+  /**
+   * Bloque automatiquement un utilisateur après trop de tentatives
+   * Note: Les managers (type 3) ne peuvent pas être bloqués automatiquement
+   * @returns true si l'utilisateur a été bloqué, false sinon (manager ou utilisateur introuvable)
+   */
+  static async autoBlockUserIfNeeded(email: string): Promise<{
+    blocked: boolean;
+    reason: string;
+  }> {
+    const blocageActif = await this.getParameterBoolean('activer_blocage_auto', true);
+    if (!blocageActif) {
+      return { blocked: false, reason: 'Blocage automatique désactivé' };
+    }
+
+    const blockInfo = await this.checkBlocking(email);
+
+    // Les managers ne peuvent pas être bloqués
+    if (blockInfo.isManager) {
+      console.log(`⚠️ Tentative de blocage automatique d'un manager (${email}) - Ignorée`);
+      return { blocked: false, reason: 'Les managers ne peuvent pas être bloqués' };
+    }
+
+    // Déjà bloqué
+    if (blockInfo.isPermanentlyBlocked) {
+      return { blocked: false, reason: 'Utilisateur déjà bloqué' };
+    }
+
+    // Vérifier si le seuil est atteint
+    if (blockInfo.isBlocked) {
+      const user = await UserService.findByEmail(email);
+      if (user) {
+        try {
+          await UserService.blockUser(user.id_user);
+          console.log(`🔒 Utilisateur ${email} bloqué automatiquement après ${blockInfo.attempts} tentatives échouées`);
+
+          // Synchroniser vers Firebase si disponible
+          const isOnline = await hybridDataService.isFirebaseAvailable();
+          if (isOnline && user.firebase_uid) {
+            try {
+              const db = getFirestore();
+              await db.collection('users').doc(user.firebase_uid).update({
+                est_bloque: true,
+                raison_blocage: 'Blocage automatique: trop de tentatives de connexion',
+                date_blocage: admin.firestore.FieldValue.serverTimestamp()
+              });
+            } catch (fbError: any) {
+              console.warn('⚠️ Erreur sync blocage vers Firebase:', fbError.message);
+            }
+          }
+
+          return {
+            blocked: true,
+            reason: `Compte bloqué automatiquement après ${blockInfo.attempts} tentatives échouées`
+          };
+        } catch (error: any) {
+          console.error('❌ Erreur blocage automatique:', error.message);
+          return { blocked: false, reason: error.message };
+        }
+      }
+    }
+
+    return { blocked: false, reason: 'Seuil non atteint' };
+  }
+
+  /**
+   * Réinitialise les tentatives de connexion pour un email
+   */
+  static async resetAttempts(email: string): Promise<void> {
     await query(
-      `DELETE FROM TentativeConnexion WHERE id_user = $1 AND succes = FALSE`,
-      [userId]
+      `DELETE FROM TentativeConnexion WHERE email = $1 AND succes = FALSE`,
+      [email]
     );
   }
 
   /**
-   * Obtient l'historique des tentatives d'un utilisateur
+   * Obtient l'historique des tentatives pour un email
    */
-  static async getAttemptHistory(userId: number, limit: number = 10): Promise<TentativeConnexion[]> {
+  static async getAttemptHistory(email: string, limit: number = 10): Promise<TentativeConnexion[]> {
     const result = await query(
-      `SELECT id_tentative, id_user, date_tentative, succes, adresse_ip
+      `SELECT id_tentative, email, ip_address, succes, date_tentative, raison_echec
        FROM TentativeConnexion
-       WHERE id_user = $1
+       WHERE email = $1
        ORDER BY date_tentative DESC
        LIMIT $2`,
-      [userId, limit]
+      [email, limit]
     );
     return result.rows;
   }
 
   /**
-   * Obtient les paramètres pour un type d'utilisateur
+   * Obtient toutes les tentatives récentes (pour admin)
    */
-  static async getParameters(typeUserId: number): Promise<Parametre | null> {
+  static async getAllRecentAttempts(hours: number = 24): Promise<TentativeConnexion[]> {
     const result = await query(
-      `SELECT id_parametre, nom, limite_tentatives, duree_session, id_type_user
-       FROM Parametre WHERE id_type_user = $1`,
-      [typeUserId]
+      `SELECT id_tentative, email, ip_address, succes, date_tentative, raison_echec
+       FROM TentativeConnexion
+       WHERE date_tentative > NOW() - ($1 || ' hours')::INTERVAL
+       ORDER BY date_tentative DESC`,
+      [hours]
+    );
+    return result.rows;
+  }
+
+  /**
+   * Nettoie les anciennes tentatives
+   */
+  static async cleanOldAttempts(days: number = 30): Promise<number> {
+    const result = await query(
+      `DELETE FROM TentativeConnexion 
+       WHERE date_tentative < NOW() - ($1 || ' days')::INTERVAL
+       RETURNING id_tentative`,
+      [days]
+    );
+    return result.rowCount || 0;
+  }
+
+  // =============================================
+  // GESTION DES PARAMÈTRES
+  // =============================================
+
+  /**
+   * Obtient un paramètre par son nom
+   */
+  static async getParameter(nom: string): Promise<Parametre | null> {
+    const result = await query(
+      `SELECT id_parametre, nom, valeur, type, description, date_modification
+       FROM Parametre WHERE nom = $1`,
+      [nom]
     );
     return result.rows[0] || null;
   }
 
   /**
-   * Met à jour les paramètres d'un type d'utilisateur
+   * Obtient la valeur d'un paramètre avec valeur par défaut
    */
-  static async updateParameters(
-    typeUserId: number, 
-    limiteTentatives?: number, 
-    dureeSession?: number
-  ): Promise<Parametre | null> {
-    const updates: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
-
-    if (limiteTentatives !== undefined) {
-      updates.push(`limite_tentatives = $${paramIndex++}`);
-      values.push(limiteTentatives);
+  static async getParameterValue(nom: string, defaultValue: number): Promise<number> {
+    const param = await this.getParameter(nom);
+    if (param && param.type === 'number') {
+      return parseInt(param.valeur, 10);
     }
-    if (dureeSession !== undefined) {
-      updates.push(`duree_session = $${paramIndex++}`);
-      values.push(dureeSession);
-    }
+    return defaultValue;
+  }
 
-    if (updates.length === 0) {
-      return this.getParameters(typeUserId);
-    }
+  /**
+   * Obtient la valeur string d'un paramètre
+   */
+  static async getParameterString(nom: string, defaultValue: string = ''): Promise<string> {
+    const param = await this.getParameter(nom);
+    return param?.valeur || defaultValue;
+  }
 
-    values.push(typeUserId);
-    const result = await query(
-      `UPDATE Parametre SET ${updates.join(', ')}
-       WHERE id_type_user = $${paramIndex}
-       RETURNING id_parametre, nom, limite_tentatives, duree_session, id_type_user`,
-      values
+  /**
+   * Obtient la valeur boolean d'un paramètre
+   */
+  static async getParameterBoolean(nom: string, defaultValue: boolean = false): Promise<boolean> {
+    const param = await this.getParameter(nom);
+    if (param && param.type === 'boolean') {
+      return param.valeur === 'true';
+    }
+    return defaultValue;
+  }
+
+  /**
+   * Met à jour un paramètre (PostgreSQL + Firebase)
+   */
+  static async setParameter(nom: string, valeur: string): Promise<void> {
+    // 1. Mettre à jour dans PostgreSQL
+    await query(
+      `UPDATE Parametre SET valeur = $1, date_modification = NOW() WHERE nom = $2`,
+      [valeur, nom]
     );
 
-    return result.rows[0] || null;
+    // 2. Synchroniser vers Firebase si disponible
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (isOnline) {
+      try {
+        const db = getFirestore();
+        const param = await this.getParameter(nom);
+        if (param) {
+          await db.collection('Parametre').doc(param.id_parametre.toString()).update({
+            valeur,
+            date_modification: admin.firestore.Timestamp.now()
+          });
+          console.log(`✅ Paramètre '${nom}' synchronisé vers Firebase`);
+        }
+      } catch (error: any) {
+        console.warn('⚠️ Échec sync paramètre vers Firebase:', error.message);
+      }
+    }
   }
 
   /**
@@ -154,12 +328,149 @@ export class LoginAttemptService {
    */
   static async getAllParameters(): Promise<Parametre[]> {
     const result = await query(
-      `SELECT p.id_parametre, p.nom, p.limite_tentatives, p.duree_session, p.id_type_user, t.libelle as type_libelle
-       FROM Parametre p
-       JOIN TypeUser t ON p.id_type_user = t.id_type_user
-       ORDER BY p.id_type_user`
+      `SELECT id_parametre, nom, valeur, type, description, date_modification
+       FROM Parametre ORDER BY nom`
     );
     return result.rows;
+  }
+
+  /**
+   * Crée ou met à jour un paramètre (PostgreSQL + Firebase)
+   */
+  static async upsertParameter(
+    nom: string,
+    valeur: string,
+    type: string = 'string',
+    description?: string
+  ): Promise<void> {
+    // 1. Upsert dans PostgreSQL
+    const result = await query(
+      `INSERT INTO Parametre (nom, valeur, type, description)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (nom) DO UPDATE SET 
+         valeur = EXCLUDED.valeur,
+         type = EXCLUDED.type,
+         description = COALESCE(EXCLUDED.description, Parametre.description),
+         date_modification = NOW()
+       RETURNING id_parametre, date_modification`,
+      [nom, valeur, type, description || null]
+    );
+
+    // 2. Synchroniser vers Firebase si disponible
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (isOnline) {
+      try {
+        const db = getFirestore();
+        const param = result.rows[0];
+        await db.collection('Parametre').doc(param.id_parametre.toString()).set({
+          id: param.id_parametre,
+          nom,
+          valeur,
+          type,
+          description: description || null,
+          date_modification: admin.firestore.Timestamp.fromDate(param.date_modification)
+        });
+        console.log(`✅ Paramètre '${nom}' créé/mis à jour dans Firebase`);
+      } catch (error: any) {
+        console.warn('⚠️ Échec sync paramètre vers Firebase:', error.message);
+      }
+    }
+  }
+
+  /**
+   * Synchronise tous les paramètres de PostgreSQL vers Firebase
+   */
+  static async syncAllParametersToFirebase(): Promise<void> {
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (!isOnline) {
+      console.log('⚠️ Firebase non disponible, synchronisation ignorée');
+      return;
+    }
+
+    try {
+      const db = getFirestore();
+      const params = await this.getAllParameters();
+
+      for (const param of params) {
+        await db.collection('Parametre').doc(param.id_parametre.toString()).set({
+          id: param.id_parametre,
+          nom: param.nom,
+          valeur: param.valeur,
+          type: param.type,
+          description: param.description || null,
+          date_modification: admin.firestore.Timestamp.fromDate(param.date_modification)
+        });
+      }
+      console.log(`✅ ${params.length} paramètres synchronisés vers Firebase`);
+    } catch (error: any) {
+      console.error('❌ Erreur sync paramètres:', error.message);
+    }
+  }
+
+  /**
+   * Synchronise les paramètres de Firebase vers PostgreSQL (cache local)
+   */
+  static async syncParametersFromFirebase(): Promise<void> {
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (!isOnline) return;
+
+    try {
+      const db = getFirestore();
+      const snapshot = await db.collection('Parametre').get();
+
+      for (const doc of snapshot.docs) {
+        if (doc.id.startsWith('_')) continue; // Ignorer les placeholders
+
+        const data = doc.data();
+        await query(
+          `INSERT INTO Parametre (id_parametre, nom, valeur, type, description, date_modification)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (nom) DO UPDATE SET 
+             valeur = EXCLUDED.valeur,
+             type = EXCLUDED.type,
+             description = COALESCE(EXCLUDED.description, Parametre.description),
+             date_modification = EXCLUDED.date_modification`,
+          [
+            data.id,
+            data.nom,
+            data.valeur,
+            data.type,
+            data.description || null,
+            data.date_modification?.toDate() || new Date()
+          ]
+        );
+      }
+      console.log(`✅ ${snapshot.size} paramètres synchronisés depuis Firebase`);
+    } catch (error: any) {
+      console.error('❌ Erreur sync paramètres depuis Firebase:', error.message);
+    }
+  }
+
+  /**
+   * Synchronise les tentatives de connexion récentes vers Firebase
+   */
+  static async syncRecentAttemptsToFirebase(hours: number = 24): Promise<void> {
+    const isOnline = await hybridDataService.isFirebaseAvailable();
+    if (!isOnline) return;
+
+    try {
+      const db = getFirestore();
+      const attempts = await this.getAllRecentAttempts(hours);
+
+      for (const attempt of attempts) {
+        await db.collection('TentativeConnexion').doc(attempt.id_tentative.toString()).set({
+          id: attempt.id_tentative,
+          email: attempt.email,
+          ip_address: attempt.ip_address || null,
+          succes: attempt.succes,
+          date_tentative: admin.firestore.Timestamp.fromDate(attempt.date_tentative),
+          raison_echec: attempt.raison_echec || null
+        });
+      }
+      console.log(`✅ ${attempts.length} tentatives synchronisées vers Firebase`);
+    } catch (error: any) {
+      console.error('❌ Erreur sync tentatives:', error.message);
+    }
   }
 }
 

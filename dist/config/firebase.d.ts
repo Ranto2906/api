@@ -27,7 +27,7 @@ export declare function getFirestore(): admin.firestore.Firestore;
 /**
  * Obtient le service d'authentification Firebase
  */
-export declare function getAuth(): import("firebase-admin/lib/auth/auth").Auth;
+export declare function getAuth(): import("firebase-admin/auth").Auth;
 /**
  * Obtient le service de réaltime database (si configuré)
  */

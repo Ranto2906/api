@@ -12,9 +12,9 @@ pnpm-debug.log*
 .env.production
 
 # Firebase Service Account (sensitive credentials)
-firebase-service-account.json
-firebase-service-account-*.json
-*-firebase-credentials.json
+# firebase-service-account.json
+# firebase-service-account-*.json
+# *-firebase-credentials.json
 
 # Build outputs
 dist/

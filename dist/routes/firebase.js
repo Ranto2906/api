@@ -40,6 +40,7 @@ const express_1 = require("express");
 const admin = __importStar(require("firebase-admin"));
 const database_1 = __importDefault(require("../config/database"));
 const auth_1 = require("../middleware/auth");
+const emailService_1 = require("../services/emailService");
 const router = (0, express_1.Router)();
 /**
  * POST /api/firebase/verify-token
@@ -77,11 +78,16 @@ router.post('/verify-token', async (req, res) => {
 });
 /**
  * POST /api/firebase/create-user
- * Crée un utilisateur dans Firebase Authentication
+ * Crée un utilisateur dans Firebase Authentication et envoie optionnellement un email
+ * @body {string} email - Email de l'utilisateur (requis)
+ * @body {string} password - Mot de passe (requis)
+ * @body {string} displayName - Nom d'affichage
+ * @body {string} phoneNumber - Numéro de téléphone
+ * @body {boolean} sendEmail - Envoyer un email avec les identifiants (défaut: true)
  */
-router.post('/create-user', async (req, res) => {
+router.post('/create-user', auth_1.authMiddleware, auth_1.managerMiddleware, async (req, res) => {
     try {
-        const { email, password, displayName, phoneNumber } = req.body;
+        const { email, password, displayName, phoneNumber, sendEmail = true } = req.body;
         if (!email || !password) {
             res.status(400).json({
                 error: 'Email and password are required'
@@ -95,6 +101,25 @@ router.post('/create-user', async (req, res) => {
             displayName,
             phoneNumber
         });
+        console.log(`✅ Utilisateur Firebase créé: ${userRecord.uid} (${email})`);
+        // Envoyer l'email de bienvenue si demandé
+        let emailSent = false;
+        let emailError = null;
+        if (sendEmail) {
+            const emailResult = await emailService_1.emailService.sendWelcomeEmail({
+                email,
+                displayName: displayName || email.split('@')[0],
+                temporaryPassword: password
+            });
+            emailSent = emailResult.success;
+            emailError = emailResult.error;
+            if (emailSent) {
+                console.log(`📧 Email de bienvenue envoyé à ${email}`);
+            }
+            else {
+                console.warn(`⚠️ Impossible d'envoyer l'email à ${email}: ${emailError}`);
+            }
+        }
         res.status(201).json({
             success: true,
             user: {
@@ -103,6 +128,10 @@ router.post('/create-user', async (req, res) => {
                 displayName: userRecord.displayName,
                 phoneNumber: userRecord.phoneNumber,
                 createdAt: userRecord.metadata.creationTime
+            },
+            email: {
+                sent: emailSent,
+                error: emailError
             }
         });
     }
@@ -217,9 +246,11 @@ router.post('/sync/signalements', auth_1.authMiddleware, auth_1.managerMiddlewar
     try {
         // Récupérer les signalements non synchronisés
         const query = `
-      SELECT s.*, u.email, u.nom, u.prenom, st.libelle as status_libelle
+      SELECT s.id_signalement, s.description, s.date_signalement, s.firebase_id, s.id_user, s.id_status,
+             ST_X(s.location) as longitude, ST_Y(s.location) as latitude,
+             u.email, u.display_name, st.libelle as status_libelle
       FROM Signalement s
-      JOIN User_ u ON s.id_user = u.id_user
+      JOIN user_ u ON s.id_user = u.id_user
       JOIN Status st ON s.id_status = st.id_status
       WHERE s.est_synchronise = FALSE
     `;
@@ -287,8 +318,8 @@ router.post('/sync/users', auth_1.authMiddleware, auth_1.managerMiddleware, asyn
         // Récupérer les utilisateurs sans firebase_uid
         const query = `
       SELECT u.*, t.libelle as type_libelle
-      FROM User_ u
-      JOIN TypeUser t ON u.id_type_user = t.id_type_user
+      FROM user_ u
+      JOIN typeuser t ON u.id_type_user = t.id_type_user
       WHERE u.firebase_uid IS NULL
     `;
         const result = await database_1.default.query(query);
@@ -316,7 +347,7 @@ router.post('/sync/users', auth_1.authMiddleware, auth_1.managerMiddleware, asyn
                     synchronized_at: admin.firestore.FieldValue.serverTimestamp()
                 });
                 // Mettre à jour PostgreSQL avec l'UID Firebase
-                await database_1.default.query('UPDATE User_ SET firebase_uid = $1 WHERE id_user = $2', [firebaseUser.uid, user.id_user]);
+                await database_1.default.query('UPDATE user_ SET firebase_uid = $1 WHERE id_user = $2', [firebaseUser.uid, user.id_user]);
                 syncedCount++;
             }
             catch (itemError) {
@@ -371,7 +402,7 @@ router.get('/sync-status', auth_1.authMiddleware, auth_1.managerMiddleware, asyn
         // Compter les signalements non synchronisés
         const signalementResult = await database_1.default.query('SELECT COUNT(*) as count FROM Signalement WHERE est_synchronise = FALSE');
         // Compter les utilisateurs sans firebase_uid
-        const userResult = await database_1.default.query('SELECT COUNT(*) as count FROM User_ WHERE firebase_uid IS NULL');
+        const userResult = await database_1.default.query('SELECT COUNT(*) as count FROM user_ WHERE firebase_uid IS NULL');
         // Dernière synchronisation
         const lastSyncResult = await database_1.default.query(`
       SELECT MAX(CASE WHEN firebase_id IS NOT NULL THEN date_signalement END) as last_signalement_sync

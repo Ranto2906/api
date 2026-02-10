@@ -1,0 +1,71 @@
+# ============================================
+# Docker Compose - Mode Développement
+# Hot-reload activé (pas besoin de rebuild)
+# ============================================
+
+services:
+  # Base de données PostgreSQL avec PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3-alpine
+    container_name: travaux_routiers_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-travaux_routiers}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-travaux_routiers}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - travaux_network
+
+  # API Node.js - Mode Développement avec Hot Reload
+  api:
+    image: node:20-bookworm-slim
+    container_name: travaux_routiers_api_dev
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-travaux_routiers}
+    ports:
+      - "${API_PORT:-3001}:3001"
+    volumes:
+      # Monter le code source (hot-reload)
+      - ./src:/app/src:ro
+      - ./package.json:/app/package.json
+      - ./package-lock.json:/app/package-lock.json
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      # Fichier Firebase (optionnel)
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+      # Node modules dans un volume séparé (évite les conflits)
+      - node_modules:/app/node_modules
+      # Dossier dist pour la compilation
+      - dist:/app/dist
+    command: >
+      sh -c "npm install && npm run dev"
+    networks:
+      - travaux_network
+
+volumes:
+  postgres_data:
+    driver: local
+  node_modules:
+    driver: local
+  dist:
+    driver: local
+
+networks:
+  travaux_network:
+    driver: bridge

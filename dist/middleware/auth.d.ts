@@ -4,15 +4,16 @@ declare global {
         interface Request {
             user?: {
                 id: number;
-                nom: string;
-                prenom: string;
+                firebase_uid?: string;
                 email: string;
+                display_name: string;
                 type_user: number;
                 est_bloque: boolean;
             };
-            session?: {
-                token: string;
-                expires_at: Date;
+            firebaseUser?: {
+                uid: string;
+                email: string;
+                name?: string;
             };
             dataMode?: 'firebase' | 'postgres';
             isOnline?: boolean;
@@ -20,7 +21,11 @@ declare global {
     }
 }
 /**
- * Middleware d'authentification - vérifie le token de session
+ * Middleware d'authentification hybride
+ * Supporte 3 types de tokens:
+ * 1. Firebase ID Token (JWT) - vérifié avec Firebase Admin SDK
+ * 2. Firebase UID - recherché directement dans le cache PostgreSQL
+ * 3. Token local (local_{id}_{timestamp}) - pour mode hors ligne
  */
 export declare function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void>;
 /**
@@ -33,6 +38,7 @@ export declare function managerMiddleware(req: Request, res: Response, next: Nex
 export declare function userMiddleware(req: Request, res: Response, next: NextFunction): Promise<void>;
 /**
  * Middleware optionnel - ajoute l'utilisateur si un token est présent mais ne bloque pas
+ * Supporte les mêmes types de tokens que authMiddleware
  */
 export declare function optionalAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void>;
 declare const _default: {
