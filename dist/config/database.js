@@ -8,7 +8,7 @@ const pg_1 = require("pg");
  * Configuration de la connexion PostgreSQL
  */
 const pool = new pg_1.Pool({
-    connectionString: process.env.DATABASE_URL || 'postgresql://admin:password@localhost:5433/travaux_routiers',
+    connectionString: process.env.DATABASE_URL || 'postgresql://etu003659:Randria@localhost:5432/travaux_routiers',
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,

@@ -1,0 +1,86 @@
+### Variables
+@host = http://localhost:3001
+@token = Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+
+### 📋 API INFO
+GET {{host}}/api
+
+### 🔒 DÉSACTIVÉ - Tenter l'auto-inscription (devrait retourner 403)
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "test.user@email.mg",
+  "password": "TestPassword123",
+  "display_name": "Test User"
+}
+
+### 👥 LISTER TOUS LES UTILISATEURS
+GET {{host}}/api/users
+Authorization: {{token}}
+
+### 🔍 LISTER AVEC PAGINATION ET FILTRE
+GET {{host}}/api/users?page=1&limit=5&type_user=2
+Authorization: {{token}}
+
+### 🔎 RECHERCHE RAPIDE
+GET {{host}}/api/users/search?q=jean
+Authorization: {{token}}
+
+### 📊 STATISTIQUES DES UTILISATEURS
+GET {{host}}/api/users/stats/summary
+Authorization: {{token}}
+
+### 👤 RÉCUPÉRER UN UTILISATEUR PAR ID
+GET {{host}}/api/users/1
+Authorization: {{token}}
+
+### ➕ CRÉER UN NOUVEL UTILISATEUR
+POST {{host}}/api/users
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "email": "nouveau.manager@email.mg",
+  "password": "SecurePassword123",
+  "display_name": "Nouveau Manager",
+  "type_user": 3
+}
+
+### 📝 METTRE À JOUR UN UTILISATEUR
+PUT {{host}}/api/users/1
+Authorization: {{token}}
+Content-Type: application/json
+
+{
+  "display_name": "Jean Dupont Modifié",
+  "type_user": 2
+}
+
+### 🔒 BLOQUER UN UTILISATEUR
+POST {{host}}/api/users/2/block
+Authorization: {{token}}
+
+### 🔓 DÉBLOQUER UN UTILISATEUR
+POST {{host}}/api/users/2/unblock
+Authorization: {{token}}
+
+### 🗑️ SUPPRIMER UN UTILISATEUR (du cache local)
+DELETE {{host}}/api/users/10
+Authorization: {{token}}
+
+### ✅ TEST - Lister les utilisateurs bloqués
+GET {{host}}/api/users?est_bloque=true
+Authorization: {{token}}
+
+### ✅ TEST - Lister les visiteurs uniquement
+GET {{host}}/api/users?type_user=1&limit=20
+Authorization: {{token}}
+
+### ✅ TEST - Lister les managers uniquement
+GET {{host}}/api/users?type_user=3
+Authorization: {{token}}
+
+### ✅ TEST - Trier par email (A→Z)
+GET {{host}}/api/users?sort_by=email&order=ASC&limit=10
+Authorization: {{token}}

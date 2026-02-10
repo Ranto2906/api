@@ -1,319 +1,515 @@
 /**
  * Script d'initialisation des collections Firebase
  * Crée toutes les collections et documents initiaux basés sur le schéma PostgreSQL
+ * Adapté au projet travaux_routiers avec synchronisation bidirectionnelle
  */
 
 import { initializeFirebase, getFirestore } from '../config/firebase';
 import * as admin from 'firebase-admin';
-
-interface TypeUser {
-  id: number;
-  libelle: string;
-}
-
-interface Status {
-  id: number;
-  libelle: string;
-  couleur: string;
-}
-
-interface Parametre {
-  id: number;
-  nom: string;
-  limite_tentatives: number;
-  duree_session: number;
-  id_type_user: number;
-}
-
-interface Entreprise {
-  id: number;
-  nom: string;
-  telephone: string;
-  email: string;
-  adresse: string;
-}
-
-interface User {
-  id: number;
-  nom: string;
-  prenom: string;
-  email: string;
-  password: string;
-  firebase_uid?: string;
-  date_creation: admin.firestore.Timestamp;
-  est_bloque: boolean;
-  id_type_user: number;
-}
-
-interface Signalement {
-  id: number;
-  location: admin.firestore.GeoPoint;
-  date_signalement: admin.firestore.Timestamp;
-  description?: string;
-  firebase_id?: string;
-  est_synchronise: boolean;
-  id_user: number;
-  id_status: number;
-}
-
-interface Reparation {
-  id: number;
-  surface_m2: number;
-  budget: number;
-  date_debut?: admin.firestore.Timestamp;
-  date_fin_prevue?: admin.firestore.Timestamp;
-  date_fin_reelle?: admin.firestore.Timestamp;
-  commentaire?: string;
-  date_creation: admin.firestore.Timestamp;
-  date_modification?: admin.firestore.Timestamp;
-  id_signalement: number;
-  id_entreprise: number;
-  id_status: number;
-  id_user: number;
-}
-
-interface HistoriqueStatus {
-  id: number;  // Correspond à Id_Historique SERIAL (INT) dans PostgreSQL
-  id_reparation: number;  // Correspond à Id_Reparation INT dans PostgreSQL
-  id_status_ancien?: number;  // Correspond à Id_Status INT dans PostgreSQL
-  id_status_nouveau: number;  // Correspond à Id_Status INT dans PostgreSQL
-  id_user: number;  // Correspond à Id_user INT dans PostgreSQL
-  date_modification: admin.firestore.Timestamp;
-  commentaire?: string;
-}
-
-interface TentativeConnexion {
-  id: number;  // Correspond à Id_tentative SERIAL (INT) dans PostgreSQL
-  id_user: number;  // Correspond à Id_user INT dans PostgreSQL
-  date_tentative: admin.firestore.Timestamp;
-  succes: boolean;
-  adresse_ip?: string;
-}
-
-interface Session {
-  id: number;  // Correspond à Id_session SERIAL (INT) dans PostgreSQL
-  id_user: number;  // Correspond à Id_user INT dans PostgreSQL
-  token: string;
-  date_creation: admin.firestore.Timestamp;
-  date_expiration: admin.firestore.Timestamp;
-  est_active: boolean;
-}
+import pool from '../config/database';
 
 /**
- * Initialise toutes les collections Firebase avec des données par défaut
+ * Initialise toutes les collections Firebase avec des données de PostgreSQL
  */
 export async function initializeAllFirebaseCollections(): Promise<void> {
-  console.log('🚀 Début de l\'initialisation des collections Firebase...');
-  
+  console.log('🚀 Début de l\'initialisation des collections Firebase...\n');
+
   try {
-    // Vérifier la configuration Firebase avant l'initialisation
-    const serviceAccountPath = require('path').join(__dirname, '../../firebase-service-account.json');
-    if (!require('fs').existsSync(serviceAccountPath)) {
-      throw new Error(`Fichier de configuration manquant: ${serviceAccountPath}`);
-    }
-
-    // Initialisation Firebase avec gestion d'erreur
-    let firebaseApp;
-    try {
-      firebaseApp = initializeFirebase();
-      if (!firebaseApp) {
-        throw new Error('Impossible d\'initialiser Firebase - application nulle');
-      }
-    } catch (error: any) {
-      console.error('❌ Erreur d\'initialisation Firebase:', error.message);
-      if (error.message.includes('no configuration corresponding')) {
-        console.log('📝 Vérifiez que le project_id dans firebase-service-account.json est correct');
-        console.log('📝 Project ID actuel: mapmobile-31594');
-      }
-      throw error;
-    }
-
     const db = getFirestore();
-    const batch = db.batch();
+    console.log('✅ Firebase connecté');
+    console.log('✅ PostgreSQL connecté\n');
 
-    // 1. Créer les types d'utilisateurs
-    console.log('📁 Création de la collection TypeUser...');
-    const typeUsersData: TypeUser[] = [
-      { id: 1, libelle: 'Visiteur' },
-      { id: 2, libelle: 'Utilisateur' },
-      { id: 3, libelle: 'Manager' }
-    ];
+    // Collections de référence
+    console.log('📁 Synchronisation des collections de référence...');
+    await syncTypeUser(db);
+    await syncStatus(db);
+    await syncParametre(db);
 
-    typeUsersData.forEach(typeUser => {
-      const ref = db.collection('TypeUser').doc(typeUser.id.toString());
-      batch.set(ref, typeUser);
-    });
+    // Collections métier
+    console.log('\n📁 Synchronisation des collections métier...');
+    await syncEntreprise(db);
+    await syncUsers(db);
 
-    // 2. Créer les statuts
-    console.log('📁 Création de la collection Status...');
-    const statusData: Status[] = [
-      { id: 1, libelle: 'Nouveau', couleur: '#FF0000' },
-      { id: 2, libelle: 'En cours', couleur: '#FFA500' },
-      { id: 3, libelle: 'Terminé', couleur: '#00FF00' }
-    ];
+    // Collections avec relations
+    console.log('\n📁 Synchronisation des collections avec relations...');
+    await syncSignalements(db);
+    await syncReparations(db);
+    await syncHistoriqueStatus(db);
 
-    statusData.forEach(status => {
-      const ref = db.collection('Status').doc(status.id.toString());
-      batch.set(ref, status);
-    });
+    // Collections de gestion
+    console.log('\n📁 Synchronisation des collections de gestion...');
+    await syncSession(db);
+    await syncTentativeConnexion(db);
 
-    // 3. Créer les paramètres par type d'utilisateur
-    console.log('📁 Création de la collection Parametre...');
-    const parametresData: Parametre[] = [
-      {
-        id: 1,
-        nom: 'Paramètres Visiteur',
-        limite_tentatives: 3,
-        duree_session: 3600,
-        id_type_user: 1
-      },
-      {
-        id: 2,
-        nom: 'Paramètres Utilisateur',
-        limite_tentatives: 3,
-        duree_session: 7200,
-        id_type_user: 2
-      },
-      {
-        id: 3,
-        nom: 'Paramètres Manager',
-        limite_tentatives: 5,
-        duree_session: 14400,
-        id_type_user: 3
-      }
-    ];
-
-    parametresData.forEach(parametre => {
-      const ref = db.collection('Parametre').doc(parametre.id.toString());
-      batch.set(ref, parametre);
-    });
-
-    // 4. Créer les entreprises
-    console.log('📁 Création de la collection Entreprise...');
-    const entreprisesData: Entreprise[] = [
-      {
-        id: 1,
-        nom: 'Entreprise Municipal',
-        telephone: '+261 20 22 123 45',
-        email: 'municipal@antananarivo.mg',
-        adresse: 'Antananarivo, Madagascar'
-      }
-    ];
-
-    entreprisesData.forEach(entreprise => {
-      const ref = db.collection('Entreprise').doc(entreprise.id.toString());
-      batch.set(ref, entreprise);
-    });
-
-    // 5. Créer l'utilisateur Manager par défaut
-    console.log('📁 Création de la collection User_...');
-    const usersData: User[] = [
-      {
-        id: 1,
-        nom: 'Admin',
-        prenom: 'Manager',
-        email: 'manager@manager.mg',
-        password: 'admin', // Mot de passe en clair
-        date_creation: admin.firestore.Timestamp.now(),
-        est_bloque: false,
-        id_type_user: 3
-      }
-    ];
-
-    usersData.forEach(user => {
-      const ref = db.collection('User_').doc(user.id.toString());
-      batch.set(ref, user);
-    });
-
-    // Exécuter le batch pour les collections de base
-    console.log('💾 Sauvegarde des collections de base...');
-    await batch.commit();
-
-    // Créer les collections qui dépendent d'autres collections mais sans données initiales
-    // (elles seront remplies dynamiquement par l'application)
-    console.log('📁 Création des collections vides...');
-    
-    // Collection Signalement (vide)
-    const signalementRef = db.collection('Signalement').doc('_placeholder');
-    await signalementRef.set({
-      _placeholder: true,
-      _created: admin.firestore.Timestamp.now(),
-      _description: 'Collection créée - ce document sera supprimé automatiquement'
-    });
-
-    // Collection Reparation (vide)
-    const reparationRef = db.collection('Reparation').doc('_placeholder');
-    await reparationRef.set({
-      _placeholder: true,
-      _created: admin.firestore.Timestamp.now(),
-      _description: 'Collection créée - ce document sera supprimé automatiquement'
-    });
-
-    // Collection HistoriqueStatus (vide)
-    const historiqueRef = db.collection('HistoriqueStatus').doc('_placeholder');
-    await historiqueRef.set({
-      _placeholder: true,
-      _created: admin.firestore.Timestamp.now(),
-      _description: 'Collection créée - ce document sera supprimé automatiquement'
-    });
-
-    // Collection TentativeConnexion (vide)
-    const tentativeRef = db.collection('TentativeConnexion').doc('_placeholder');
-    await tentativeRef.set({
-      _placeholder: true,
-      _created: admin.firestore.Timestamp.now(),
-      _description: 'Collection créée - ce document sera supprimé automatiquement'
-    });
-
-    // Collection Session (vide)
-    const sessionRef = db.collection('Session').doc('_placeholder');
-    await sessionRef.set({
-      _placeholder: true,
-      _created: admin.firestore.Timestamp.now(),
-      _description: 'Collection créée - ce document sera supprimé automatiquement'
-    });
-
-    console.log('✅ Toutes les collections Firebase ont été créées avec succès!');
-    console.log('\n📋 Collections créées:');
-    console.log('  - TypeUser (3 documents)');
-    console.log('  - Status (3 documents)');
-    console.log('  - Parametre (3 documents)');
-    console.log('  - Entreprise (1 document)');
-    console.log('  - User_ (1 document manager)');
-    console.log('  - Signalement (vide)');
-    console.log('  - Reparation (vide)');
-    console.log('  - HistoriqueStatus (vide)');
-    console.log('  - TentativeConnexion (vide)');
-    console.log('  - Session (vide)');
-
+    console.log('\n✅ Initialisation terminée avec succès!');
   } catch (error) {
-    console.error('❌ Erreur lors de l\'initialisation des collections:', error);
+    console.error('❌ Erreur lors de l\'initialisation:', error);
     throw error;
   }
 }
 
 /**
- * Supprime tous les documents placeholder créés
+ * Synchronise les TypeUser de PostgreSQL vers Firebase
  */
-export async function removePlaceholders(): Promise<void> {
-  console.log('🧹 Suppression des documents placeholder...');
-  
+async function syncTypeUser(db: admin.firestore.Firestore): Promise<void> {
   try {
-    const db = getFirestore();
-    const collections = ['Signalement', 'Reparation', 'HistoriqueStatus', 'TentativeConnexion', 'Session'];
-    
-    for (const collectionName of collections) {
-      const placeholderRef = db.collection(collectionName).doc('_placeholder');
-      const doc = await placeholderRef.get();
-      if (doc.exists) {
-        await placeholderRef.delete();
-        console.log(`  ✅ Placeholder supprimé de ${collectionName}`);
+    const result = await pool.query('SELECT id_type_user as id, libelle FROM TypeUser ORDER BY id_type_user');
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('TypeUser').doc(row.id.toString()).set({
+          id: row.id,
+          libelle: row.libelle
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur TypeUser ${row.id}:`, error.message);
       }
     }
-    
-    console.log('✅ Tous les placeholders ont été supprimés');
-  } catch (error) {
-    console.error('❌ Erreur lors de la suppression des placeholders:', error);
+
+    console.log(`  ✅ ${count}/${result.rows.length} TypeUser synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation TypeUser:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Status de PostgreSQL vers Firebase
+ */
+async function syncStatus(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(
+      'SELECT id_status as id, libelle, couleur FROM Status ORDER BY id_status'
+    );
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('status').doc(row.id.toString()).set({
+          id: row.id,
+          libelle: row.libelle,
+          couleur: row.couleur,
+          est_synchronise: true,
+          updated_at: new Date(),
+          sync_version: 1
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Status ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Status synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Status:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Entreprises de PostgreSQL vers Firebase
+ */
+async function syncEntreprise(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id_entreprise as id, 
+        nom, 
+        telephone, 
+        email, 
+        adresse,
+        firebase_id,
+        est_synchronise,
+        updated_at,
+        sync_version
+      FROM Entreprise 
+      ORDER BY id_entreprise
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('entreprises').doc(
+          row.firebase_id || row.id.toString()
+        ).set({
+          id_entreprise: row.id,
+          nom: row.nom,
+          telephone: row.telephone,
+          email: row.email,
+          adresse: row.adresse,
+          firebase_id: row.firebase_id || row.id.toString(),
+          est_synchronise: row.est_synchronise || true,
+          updated_at: new Date(row.updated_at || Date.now()),
+          sync_version: row.sync_version || 1
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Entreprise ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Entreprises synchronisées`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Entreprise:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Utilisateurs de PostgreSQL vers Firebase
+ * Utilise display_name au lieu de nom/prenom
+ */
+async function syncUsers(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id_user as id,
+        firebase_uid,
+        email,
+        display_name,
+        id_type_user,
+        password,
+        est_bloque,
+        date_creation
+      FROM User_ 
+      ORDER BY id_user
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        const userId = row.firebase_uid || row.id.toString();
+        await db.collection('users').doc(userId).set({
+          id_user: row.id,
+          firebase_uid: row.firebase_uid,
+          email: row.email,
+          display_name: row.display_name,
+          id_type_user: row.id_type_user,
+          password: row.password,
+          est_bloque: row.est_bloque || false,
+          date_creation: new Date(row.date_creation),
+          derniere_sync: new Date()
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur User ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Utilisateurs synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation User_:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Paramètres de PostgreSQL vers Firebase
+ */
+async function syncParametre(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id_parametre as id,
+        nom,
+        valeur,
+        type,
+        description,
+        date_modification
+      FROM Parametre 
+      ORDER BY id_parametre
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('parametres').doc(row.id.toString()).set({
+          id_parametre: row.id,
+          nom: row.nom,
+          valeur: row.valeur,
+          type: row.type,
+          description: row.description,
+          date_modification: new Date(row.date_modification)
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Parametre ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Paramètres synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Parametre:', error.message);
+  }
+}
+
+/**
+ * Synchronise l'Historique des Status
+ */
+async function syncHistoriqueStatus(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        h.id_historique as id,
+        h.id_reparation,
+        h.id_status_ancien,
+        h.id_status_nouveau,
+        h.id_user,
+        h.date_modification,
+        h.commentaire,
+        s_ancien.libelle as ancien_status,
+        s_nouveau.libelle as nouveau_status,
+        u.display_name as user_name
+      FROM HistoriqueStatus h
+      LEFT JOIN Status s_ancien ON h.id_status_ancien = s_ancien.id_status
+      JOIN Status s_nouveau ON h.id_status_nouveau = s_nouveau.id_status
+      JOIN User_ u ON h.id_user = u.id_user
+      ORDER BY h.date_modification DESC
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('historique_status').doc(row.id.toString()).set({
+          id_historique: row.id,
+          id_reparation: row.id_reparation,
+          status_ancien: row.id_status_ancien ? {
+            id: row.id_status_ancien,
+            libelle: row.ancien_status
+          } : null,
+          status_nouveau: {
+            id: row.id_status_nouveau,
+            libelle: row.nouveau_status
+          },
+          user: {
+            id: row.id_user,
+            display_name: row.user_name
+          },
+          date_modification: new Date(row.date_modification),
+          commentaire: row.commentaire
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur HistoriqueStatus ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Historiques synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation HistoriqueStatus:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Signalements de PostgreSQL vers Firebase
+ */
+async function syncSignalements(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        s.id_signalement,
+        ST_X(s.location) as longitude,
+        ST_Y(s.location) as latitude,
+        s.description,
+        s.date_signalement,
+        s.firebase_id,
+        s.est_synchronise,
+        s.updated_at,
+        s.sync_version,
+        u.id_user,
+        u.display_name,
+        u.email,
+        st.id_status,
+        st.libelle as status_name
+      FROM Signalement s
+      JOIN User_ u ON s.id_user = u.id_user
+      JOIN Status st ON s.id_status = st.id_status
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        const docRef = db.collection('signalements').doc(row.firebase_id || row.id_signalement.toString());
+        await docRef.set({
+          id_signalement: row.id_signalement,
+          location: new admin.firestore.GeoPoint(row.latitude, row.longitude),
+          description: row.description,
+          date_signalement: new Date(row.date_signalement),
+          est_synchronise: row.est_synchronise,
+          updated_at: new Date(row.updated_at),
+          sync_version: row.sync_version,
+          user: {
+            id: row.id_user,
+            display_name: row.display_name,
+            email: row.email
+          },
+          status: {
+            id: row.id_status,
+            libelle: row.status_name
+          }
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Signalement ${row.id_signalement}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Signalements synchronisés`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Signalement:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Réparations de PostgreSQL vers Firebase
+ */
+async function syncReparations(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        r.id_reparation,
+        r.surface_m2,
+        r.budget,
+        r.date_debut,
+        r.date_fin_prevue,
+        r.date_fin_reelle,
+        r.commentaire,
+        r.firebase_id,
+        r.est_synchronise,
+        r.updated_at,
+        r.sync_version,
+        r.id_signalement,
+        r.id_entreprise,
+        r.id_user,
+        r.id_status,
+        e.nom as entreprise_nom,
+        u.display_name as manager_name,
+        st.libelle as status_name
+      FROM Reparation r
+      LEFT JOIN Entreprise e ON r.id_entreprise = e.id_entreprise
+      LEFT JOIN User_ u ON r.id_user = u.id_user
+      JOIN Status st ON r.id_status = st.id_status
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        const docRef = db.collection('reparations').doc(row.firebase_id || row.id_reparation.toString());
+        await docRef.set({
+          id_reparation: row.id_reparation,
+          surface_m2: parseFloat(row.surface_m2),
+          budget: parseFloat(row.budget),
+          date_debut: row.date_debut ? new Date(row.date_debut) : null,
+          date_fin_prevue: row.date_fin_prevue ? new Date(row.date_fin_prevue) : null,
+          date_fin_reelle: row.date_fin_reelle ? new Date(row.date_fin_reelle) : null,
+          commentaire: row.commentaire,
+          est_synchronise: row.est_synchronise,
+          updated_at: new Date(row.updated_at),
+          sync_version: row.sync_version,
+          id_signalement: row.id_signalement,
+          id_entreprise: row.id_entreprise,
+          entreprise: row.entreprise_nom ? { nom: row.entreprise_nom } : null,
+          manager: row.manager_name ? { display_name: row.manager_name } : null,
+          status: {
+            id: row.id_status,
+            libelle: row.status_name
+          }
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Reparation ${row.id_reparation}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Réparations synchronisées`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Reparation:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Sessions
+ */
+async function syncSession(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id_session as id,
+        id_user,
+        token,
+        refresh_token,
+        date_creation,
+        date_expiration,
+        est_active,
+        ip_address,
+        user_agent
+      FROM Session 
+      ORDER BY id_session DESC
+      LIMIT 1000
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('sessions').doc(row.id.toString()).set({
+          id_session: row.id,
+          id_user: row.id_user,
+          token: row.token,
+          refresh_token: row.refresh_token,
+          date_creation: new Date(row.date_creation),
+          date_expiration: new Date(row.date_expiration),
+          est_active: row.est_active,
+          ip_address: row.ip_address,
+          user_agent: row.user_agent
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur Session ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Sessions synchronisées (limité à 1000)`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation Session:', error.message);
+  }
+}
+
+/**
+ * Synchronise les Tentatives de Connexion
+ */
+async function syncTentativeConnexion(db: admin.firestore.Firestore): Promise<void> {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id_tentative as id,
+        email,
+        ip_address,
+        succes,
+        date_tentative,
+        raison_echec
+      FROM TentativeConnexion 
+      ORDER BY id_tentative DESC
+      LIMIT 1000
+    `);
+    let count = 0;
+
+    for (const row of result.rows) {
+      try {
+        await db.collection('tentatives_connexion').doc(row.id.toString()).set({
+          id_tentative: row.id,
+          email: row.email,
+          ip_address: row.ip_address,
+          succes: row.succes,
+          date_tentative: new Date(row.date_tentative),
+          raison_echec: row.raison_echec
+        });
+        count++;
+      } catch (error: any) {
+        console.error(`  ❌ Erreur TentativeConnexion ${row.id}:`, error.message);
+      }
+    }
+
+    console.log(`  ✅ ${count}/${result.rows.length} Tentatives synchronisées (limité à 1000)`);
+  } catch (error: any) {
+    console.error('  ❌ Erreur synchronisation TentativeConnexion:', error.message);
   }
 }
 
@@ -321,33 +517,78 @@ export async function removePlaceholders(): Promise<void> {
  * Vérifie l'état des collections Firebase
  */
 export async function checkFirebaseCollections(): Promise<void> {
-  console.log('🔍 Vérification des collections Firebase...');
-  
+  console.log('🔍 Vérification des collections Firebase...\n');
+
   try {
     const db = getFirestore();
     const collections = [
-      'TypeUser', 'Status', 'Parametre', 'Entreprise', 
-      'User_', 'Signalement', 'Reparation', 'HistoriqueStatus', 
-      'TentativeConnexion', 'Session'
+      'TypeUser',
+      'status',
+      'parametres',
+      'entreprises',
+      'users',
+      'signalements',
+      'reparations',
+      'historique_status',
+      'sessions',
+      'tentatives_connexion'
     ];
-    
+
     for (const collectionName of collections) {
-      const snapshot = await db.collection(collectionName).get();
-      console.log(`  📁 ${collectionName}: ${snapshot.size} document(s)`);
-      
-      if (snapshot.size > 0) {
-        snapshot.docs.forEach(doc => {
-          const data = doc.data();
-          if (!data._placeholder) {
-            console.log(`    - ${doc.id}`);
+      try {
+        const snapshot = await db.collection(collectionName).limit(5).get();
+        if (snapshot.size > 0) {
+          console.log(`  📁 ${collectionName}: ✅ ${snapshot.size} document(s)`);
+          if (snapshot.size <= 3) {
+            snapshot.docs.forEach(doc => {
+              const data = doc.data();
+              const label = data.libelle || data.display_name || data.nom || data.id || doc.id;
+              console.log(`    ✓ ${doc.id}`);
+            });
           }
-        });
+        } else {
+          console.log(`  📁 ${collectionName}: ⚠️  Vide`);
+        }
+      } catch (error: any) {
+        console.log(`  📁 ${collectionName}: ℹ️  Inexistante`);
       }
     }
-    
-    console.log('✅ Vérification terminée');
-  } catch (error) {
-    console.error('❌ Erreur lors de la vérification:', error);
+
+    console.log('\n✅ Vérification terminée');
+  } catch (error: any) {
+    console.error('❌ Erreur lors de la vérification:', error.message);
+  }
+}
+
+/**
+ * Supprime les collections (pour réinitialisation)
+ */
+async function deleteAllCollections(): Promise<void> {
+  console.log('🧹 Suppression de toutes les collections...\n');
+
+  try {
+    const db = getFirestore();
+    const collections = ['TypeUser', 'status', 'parametres', 'entreprises', 'users', 'signalements', 'reparations', 'historique_status', 'sessions', 'tentatives_connexion'];
+
+    for (const collectionName of collections) {
+      try {
+        const snapshot = await db.collection(collectionName).get();
+        let deleted = 0;
+
+        for (const doc of snapshot.docs) {
+          await doc.ref.delete();
+          deleted++;
+        }
+
+        console.log(`  ✅ ${collectionName}: ${deleted} document(s) supprimé(s)`);
+      } catch (error: any) {
+        console.log(`  ℹ️  ${collectionName}: Aucun document à supprimer`);
+      }
+    }
+
+    console.log('\n✅ Suppression terminée');
+  } catch (error: any) {
+    console.error('❌ Erreur lors de la suppression:', error.message);
   }
 }
 
@@ -358,25 +599,38 @@ async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || 'init';
 
-  switch (command) {
-    case 'init':
-      await initializeAllFirebaseCollections();
-      break;
-    case 'check':
-      await checkFirebaseCollections();
-      break;
-    case 'clean':
-      await removePlaceholders();
-      break;
-    default:
-      console.log('Usage: npm run firebase-init [init|check|clean]');
-      console.log('  init  - Initialise toutes les collections');
-      console.log('  check - Vérifie l\'état des collections');
-      console.log('  clean - Supprime les documents placeholder');
-      process.exit(1);
+  try {
+    // Initialiser Firebase
+    initializeFirebase();
+
+    switch (command) {
+      case 'init':
+        await initializeAllFirebaseCollections();
+        break;
+      case 'check':
+        await checkFirebaseCollections();
+        break;
+      case 'reset':
+        await deleteAllCollections();
+        await initializeAllFirebaseCollections();
+        break;
+      case 'delete':
+        await deleteAllCollections();
+        break;
+      default:
+        console.log('Usage: npm run firebase-init [init|check|reset|delete]');
+        console.log('  init   - Initialise les collections depuis PostgreSQL');
+        console.log('  check  - Vérifie l\'état des collections');
+        console.log('  reset  - Réinitialise (delete + init)');
+        console.log('  delete - Supprime toutes les collections');
+        process.exit(1);
+    }
+
+    process.exit(0);
+  } catch (error: any) {
+    console.error('\n❌ Erreur:', error.message);
+    process.exit(1);
   }
-  
-  process.exit(0);
 }
 
 // Exécuter seulement si ce fichier est lancé directement
