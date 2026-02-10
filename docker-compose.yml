@@ -1,0 +1,65 @@
+services:
+  # ============================================
+  # Base de données PostgreSQL avec PostGIS
+  # ============================================
+  postgres:
+    image: postgis/postgis:15-3.3-alpine
+    container_name: travaux_routiers_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-travaux_routiers}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-travaux_routiers}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - travaux_network
+
+  # ============================================
+  # API Node.js
+  # ============================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: travaux_routiers_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${API_PORT:-3001}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-travaux_routiers}
+      # Firebase (optionnel - mode hors ligne si non configuré)
+      GOOGLE_APPLICATION_CREDENTIALS: /app/firebase-service-account.json
+    ports:
+      - "${API_PORT:-3001}:3001"
+    volumes:
+      # Monter le fichier Firebase service account (optionnel)
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
+    networks:
+      - travaux_network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  travaux_network:
+    driver: bridge

@@ -1,23 +1,26 @@
-# Dockerfile pour l'API de gestion des travaux routiers
-FROM node:18-alpine
+# ============================================
+# Dockerfile - API Travaux Routiers
+# Multi-stage build pour optimisation
+# ============================================
 
-# Installer les dépendances système nécessaires
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++ \
-    postgresql-client
+# ============================================
+# Stage 1: Builder
+# ============================================
+FROM node:18-bookworm-slim AS builder
 
-# Créer le répertoire de travail
+# Installer les dépendances système pour la compilation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copier les fichiers de dépendances
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Installer les dépendances
-RUN npm ci --only=production && \
-    npm cache clean --force
+# Installer TOUTES les dépendances (y compris devDependencies pour tsc)
+RUN npm ci
 
 # Copier le code source
 COPY src/ ./src/
@@ -25,9 +28,30 @@ COPY src/ ./src/
 # Compiler TypeScript
 RUN npm run build
 
+# ============================================
+# Stage 2: Production
+# ============================================
+FROM node:18-bookworm-slim AS production
+
+# Installer uniquement les dépendances runtime nécessaires
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client wget && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copier les fichiers de dépendances
+COPY package*.json ./
+
+# Installer uniquement les dépendances de production
+RUN npm ci --only=production && npm cache clean --force
+
+# Copier le code compilé depuis le builder
+COPY --from=builder /app/dist ./dist
+
 # Créer un utilisateur non-root pour la sécurité
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S apiuser -u 1001 -G nodejs
+RUN groupadd -g 1001 nodejs && \
+    useradd -m -u 1001 -g nodejs apiuser
 
 # Créer le répertoire pour les logs et donner les permissions
 RUN mkdir -p /app/logs && \

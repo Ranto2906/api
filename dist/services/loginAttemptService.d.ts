@@ -1,61 +1,117 @@
 export interface TentativeConnexion {
     id_tentative: number;
-    id_user: number;
-    date_tentative: Date;
+    email: string;
+    ip_address?: string;
     succes: boolean;
-    adresse_ip?: string;
+    date_tentative: Date;
+    raison_echec?: string;
 }
 export interface Parametre {
     id_parametre: number;
     nom: string;
-    limite_tentatives: number;
-    duree_session: number;
-    id_type_user: number;
+    valeur: string;
+    type: string;
+    description?: string;
+    date_modification: Date;
 }
 /**
- * Service de gestion des tentatives de connexion et du blocage
+ * Service de gestion des tentatives de connexion et des paramètres
+ * Synchronisé entre PostgreSQL (local) et Firebase
  */
 export declare class LoginAttemptService {
     /**
-     * Enregistre une tentative de connexion
+     * Enregistre une tentative de connexion (PostgreSQL + Firebase)
      */
-    static recordAttempt(userId: number, success: boolean, ip?: string): Promise<void>;
+    static recordAttempt(email: string, success: boolean, ip?: string, raisonEchec?: string): Promise<void>;
     /**
-     * Obtient le nombre de tentatives échouées récentes pour un utilisateur
-     * (dans les dernières 15 minutes)
+     * Obtient le nombre de tentatives échouées récentes pour un email
      */
-    static getRecentFailedAttempts(userId: number): Promise<number>;
+    static getRecentFailedAttempts(email: string, minutes?: number): Promise<number>;
     /**
-     * Obtient la limite de tentatives pour un type d'utilisateur
+     * Obtient la limite de tentatives depuis les paramètres
      */
-    static getAttemptLimit(typeUserId: number): Promise<number>;
+    static getAttemptLimit(): Promise<number>;
     /**
-     * Vérifie si un utilisateur doit être bloqué
-     * Retourne true si l'utilisateur doit être bloqué
-     * Note: Les managers (type 3) ne sont jamais bloqués
+     * Vérifie si un email doit être bloqué (trop de tentatives)
      */
-    static shouldBlockUser(userId: number, typeUserId: number): Promise<boolean>;
+    static shouldBlockEmail(email: string): Promise<boolean>;
     /**
-     * Réinitialise les tentatives de connexion d'un utilisateur
-     * (supprime les tentatives échouées)
+     * Vérifie le blocage avec les paramètres
+     * Retourne aussi si l'utilisateur est un manager (non bloçable)
      */
-    static resetAttempts(userId: number): Promise<void>;
+    static checkBlocking(email: string): Promise<{
+        isBlocked: boolean;
+        isManager: boolean;
+        isPermanentlyBlocked: boolean;
+        attempts: number;
+        maxAttempts: number;
+        remainingAttempts: number;
+    }>;
     /**
-     * Obtient l'historique des tentatives d'un utilisateur
+     * Bloque automatiquement un utilisateur après trop de tentatives
+     * Note: Les managers (type 3) ne peuvent pas être bloqués automatiquement
+     * @returns true si l'utilisateur a été bloqué, false sinon (manager ou utilisateur introuvable)
      */
-    static getAttemptHistory(userId: number, limit?: number): Promise<TentativeConnexion[]>;
+    static autoBlockUserIfNeeded(email: string): Promise<{
+        blocked: boolean;
+        reason: string;
+    }>;
     /**
-     * Obtient les paramètres pour un type d'utilisateur
+     * Réinitialise les tentatives de connexion pour un email
      */
-    static getParameters(typeUserId: number): Promise<Parametre | null>;
+    static resetAttempts(email: string): Promise<void>;
     /**
-     * Met à jour les paramètres d'un type d'utilisateur
+     * Obtient l'historique des tentatives pour un email
      */
-    static updateParameters(typeUserId: number, limiteTentatives?: number, dureeSession?: number): Promise<Parametre | null>;
+    static getAttemptHistory(email: string, limit?: number): Promise<TentativeConnexion[]>;
+    /**
+     * Obtient toutes les tentatives récentes (pour admin)
+     */
+    static getAllRecentAttempts(hours?: number): Promise<TentativeConnexion[]>;
+    /**
+     * Nettoie les anciennes tentatives
+     */
+    static cleanOldAttempts(days?: number): Promise<number>;
+    /**
+     * Obtient un paramètre par son nom
+     */
+    static getParameter(nom: string): Promise<Parametre | null>;
+    /**
+     * Obtient la valeur d'un paramètre avec valeur par défaut
+     */
+    static getParameterValue(nom: string, defaultValue: number): Promise<number>;
+    /**
+     * Obtient la valeur string d'un paramètre
+     */
+    static getParameterString(nom: string, defaultValue?: string): Promise<string>;
+    /**
+     * Obtient la valeur boolean d'un paramètre
+     */
+    static getParameterBoolean(nom: string, defaultValue?: boolean): Promise<boolean>;
+    /**
+     * Met à jour un paramètre (PostgreSQL + Firebase)
+     */
+    static setParameter(nom: string, valeur: string): Promise<void>;
     /**
      * Obtient tous les paramètres
      */
     static getAllParameters(): Promise<Parametre[]>;
+    /**
+     * Crée ou met à jour un paramètre (PostgreSQL + Firebase)
+     */
+    static upsertParameter(nom: string, valeur: string, type?: string, description?: string): Promise<void>;
+    /**
+     * Synchronise tous les paramètres de PostgreSQL vers Firebase
+     */
+    static syncAllParametersToFirebase(): Promise<void>;
+    /**
+     * Synchronise les paramètres de Firebase vers PostgreSQL (cache local)
+     */
+    static syncParametersFromFirebase(): Promise<void>;
+    /**
+     * Synchronise les tentatives de connexion récentes vers Firebase
+     */
+    static syncRecentAttemptsToFirebase(hours?: number): Promise<void>;
 }
 export default LoginAttemptService;
 //# sourceMappingURL=loginAttemptService.d.ts.map

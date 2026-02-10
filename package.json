@@ -13,7 +13,11 @@
     "firebase-status": "ts-node src/scripts/firebaseSetup.ts status",
     "firebase-reset": "ts-node src/scripts/firebaseSetup.ts reset",
     "firebase-sample": "ts-node src/scripts/firebaseSetup.ts sample",
-    "firebase-clear": "ts-node src/scripts/firebaseSetup.ts clear"
+    "firebase-clear": "ts-node src/scripts/firebaseSetup.ts clear",
+    "sync:firebase": "ts-node src/scripts/syncToFirebase.ts",
+    "firebase-collections:init": "ts-node src/scripts/initFirebaseCollections.ts init",
+    "firebase-collections:check": "ts-node src/scripts/initFirebaseCollections.ts check",
+    "firebase-collections:reset": "ts-node src/scripts/initFirebaseCollections.ts reset"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,10 +25,12 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-validator": "^7.0.0",
+    "firebase": "^12.8.0",
     "firebase-admin": "^11.11.1",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "nodemailer": "^8.0.0",
     "pg": "^8.10.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.0"
@@ -36,6 +42,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/morgan": "^1.9.10",
     "@types/node": "^20.10.6",
+    "@types/nodemailer": "^7.0.9",
     "@types/pg": "^8.11.0",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.6",

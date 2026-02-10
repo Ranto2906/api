@@ -4,66 +4,84 @@ exports.UserService = void 0;
 const database_1 = require("../config/database");
 /**
  * Service de gestion des utilisateurs
+ * Utilise Firebase Auth pour l'authentification en ligne
+ * PostgreSQL sert de cache local pour le mode hors ligne (avec mot de passe)
  */
 class UserService {
     /**
-     * Crée un nouvel utilisateur
+     * Crée un utilisateur localement (mode hors ligne ou inscription)
      */
     static async create(userData) {
-        // Mot de passe stocké en clair (développement)
-        const result = await (0, database_1.query)(`INSERT INTO User_ (nom, prenom, email, password, id_type_user, date_creation, est_bloque)
-       VALUES ($1, $2, $3, $4, $5, NOW(), FALSE)
-       RETURNING id_user, nom, prenom, email, date_creation, est_bloque, id_type_user`, [
-            userData.nom,
-            userData.prenom || null,
+        const result = await (0, database_1.query)(`INSERT INTO user_ (email, password, display_name, id_type_user, date_creation, derniere_sync, est_bloque)
+       VALUES ($1, $2, $3, $4, NOW(), NOW(), FALSE)
+       RETURNING id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user`, [
             userData.email,
             userData.password,
-            userData.id_type_user || 2 // Par défaut: Utilisateur
+            userData.display_name || null,
+            userData.type_user || 2
         ]);
+        console.log(`✅ Utilisateur créé localement: ${userData.email}`);
         return result.rows[0];
     }
     /**
-     * Crée un utilisateur depuis Firebase (mot de passe déjà hashé)
-     * Utilisé pour synchroniser les utilisateurs Firebase vers PostgreSQL
+     * Synchronise un utilisateur depuis Firebase vers PostgreSQL (cache local)
+     * Inclut le mot de passe pour permettre la connexion hors ligne
      */
-    static async createFromFirebase(userData) {
-        // NE PAS re-hasher le mot de passe - il vient de Firebase déjà hashé
-        const result = await (0, database_1.query)(`INSERT INTO User_ (nom, prenom, email, password, id_type_user, firebase_uid, date_creation, est_bloque)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW(), FALSE)
-       RETURNING id_user, nom, prenom, email, date_creation, est_bloque, id_type_user, firebase_uid`, [
-            userData.nom,
-            userData.prenom || null,
+    static async syncFromFirebase(userData) {
+        const result = await (0, database_1.query)(`INSERT INTO user_ (firebase_uid, email, password, display_name, id_type_user, date_creation, derniere_sync, est_bloque)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), FALSE)
+       ON CONFLICT (email) 
+       DO UPDATE SET 
+         firebase_uid = COALESCE(EXCLUDED.firebase_uid, user_.firebase_uid),
+         password = EXCLUDED.password,
+         display_name = EXCLUDED.display_name,
+         derniere_sync = NOW()
+       RETURNING id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user`, [
+            userData.firebase_uid || null,
             userData.email,
-            userData.password, // Déjà hashé
-            userData.id_type_user,
-            userData.firebase_uid || null
+            userData.password,
+            userData.display_name || null,
+            userData.type_user || 2
         ]);
-        console.log(`✅ Utilisateur créé depuis Firebase: ${userData.email}`);
+        console.log(`✅ Utilisateur synchronisé: ${userData.email}`);
         return result.rows[0];
     }
     /**
-     * Trouve un utilisateur par email
+     * Trouve un utilisateur par Firebase UID
+     */
+    static async findByFirebaseUid(firebaseUid) {
+        const result = await (0, database_1.query)(`SELECT id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user
+       FROM user_ WHERE firebase_uid = $1`, [firebaseUid]);
+        return result.rows[0] || null;
+    }
+    /**
+     * Trouve un utilisateur par email (avec mot de passe pour vérification)
      */
     static async findByEmail(email) {
-        const result = await (0, database_1.query)(`SELECT id_user, nom, prenom, email, password, firebase_uid, date_creation, est_bloque, id_type_user
-       FROM User_ WHERE email = $1`, [email]);
+        const result = await (0, database_1.query)(`SELECT id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user
+       FROM user_ WHERE email = $1`, [email]);
         return result.rows[0] || null;
     }
     /**
      * Trouve un utilisateur par ID
      */
     static async findById(id) {
-        const result = await (0, database_1.query)(`SELECT id_user, nom, prenom, email, firebase_uid, date_creation, est_bloque, id_type_user
-       FROM User_ WHERE id_user = $1`, [id]);
+        const result = await (0, database_1.query)(`SELECT id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user
+       FROM user_ WHERE id_user = $1`, [id]);
         return result.rows[0] || null;
     }
     /**
-     * Trouve un utilisateur par Firebase UID
+     * Vérifie le mot de passe d'un utilisateur (comparaison en clair)
      */
-    static async findByFirebaseUid(firebaseUid) {
-        const result = await (0, database_1.query)(`SELECT id_user, nom, prenom, email, firebase_uid, date_creation, est_bloque, id_type_user
-       FROM User_ WHERE firebase_uid = $1`, [firebaseUid]);
-        return result.rows[0] || null;
+    static async verifyPassword(email, password) {
+        const user = await this.findByEmail(email);
+        if (!user || !user.password)
+            return null;
+        // Comparaison directe (pas de hashage)
+        if (user.password === password) {
+            return user;
+        }
+        return null;
     }
     /**
      * Met à jour un utilisateur
@@ -72,13 +90,9 @@ class UserService {
         const updates = [];
         const values = [];
         let paramIndex = 1;
-        if (userData.nom !== undefined) {
-            updates.push(`nom = $${paramIndex++}`);
-            values.push(userData.nom);
-        }
-        if (userData.prenom !== undefined) {
-            updates.push(`prenom = $${paramIndex++}`);
-            values.push(userData.prenom);
+        if (userData.display_name !== undefined) {
+            updates.push(`display_name = $${paramIndex++}`);
+            values.push(userData.display_name);
         }
         if (userData.email !== undefined) {
             updates.push(`email = $${paramIndex++}`);
@@ -88,67 +102,96 @@ class UserService {
             updates.push(`password = $${paramIndex++}`);
             values.push(userData.password);
         }
+        if (userData.type_user !== undefined) {
+            updates.push(`id_type_user = $${paramIndex++}`);
+            values.push(userData.type_user);
+        }
         if (updates.length === 0) {
             return this.findById(id);
         }
+        updates.push(`derniere_sync = NOW()`);
         values.push(id);
-        const result = await (0, database_1.query)(`UPDATE User_ SET ${updates.join(', ')}
+        const result = await (0, database_1.query)(`UPDATE user_ SET ${updates.join(', ')}
        WHERE id_user = $${paramIndex}
-       RETURNING id_user, nom, prenom, email, firebase_uid, date_creation, est_bloque, id_type_user`, values);
+       RETURNING id_user, firebase_uid, email, password, display_name, date_creation, derniere_sync, est_bloque, id_type_user`, values);
         return result.rows[0] || null;
     }
     /**
-     * Met à jour le Firebase UID d'un utilisateur
+     * Met à jour le Firebase UID d'un utilisateur (après première connexion en ligne)
      */
-    static async updateFirebaseUid(id, firebaseUid) {
-        await (0, database_1.query)(`UPDATE User_ SET firebase_uid = $1 WHERE id_user = $2`, [firebaseUid, id]);
+    static async updateFirebaseUid(email, firebaseUid) {
+        await (0, database_1.query)(`UPDATE user_ SET firebase_uid = $1, derniere_sync = NOW() WHERE email = $2`, [firebaseUid, email]);
     }
     /**
      * Bloque un utilisateur
      * Note: Les managers (type 3) ne peuvent pas être bloqués
      */
     static async blockUser(id) {
-        // Vérifier d'abord le type de l'utilisateur
         const user = await this.findById(id);
         if (!user) {
             throw new Error('Utilisateur introuvable');
         }
-        // Les managers ne peuvent pas être bloqués
         if (user.id_type_user === 3) {
             throw new Error('Les managers ne peuvent pas être bloqués');
         }
-        await (0, database_1.query)(`UPDATE User_ SET est_bloque = TRUE WHERE id_user = $1 AND id_type_user != 3`, [id]);
+        await (0, database_1.query)(`UPDATE user_ SET est_bloque = TRUE, derniere_sync = NOW() WHERE id_user = $1 AND id_type_user != 3`, [id]);
+    }
+    /**
+     * Bloque un utilisateur par Firebase UID
+     */
+    static async blockUserByFirebaseUid(firebaseUid) {
+        const user = await this.findByFirebaseUid(firebaseUid);
+        if (!user) {
+            throw new Error('Utilisateur introuvable');
+        }
+        if (user.id_type_user === 3) {
+            throw new Error('Les managers ne peuvent pas être bloqués');
+        }
+        await (0, database_1.query)(`UPDATE user_ SET est_bloque = TRUE, derniere_sync = NOW() WHERE firebase_uid = $1 AND id_type_user != 3`, [firebaseUid]);
     }
     /**
      * Débloque un utilisateur
      */
     static async unblockUser(id) {
-        await (0, database_1.query)(`UPDATE User_ SET est_bloque = FALSE WHERE id_user = $1`, [id]);
+        await (0, database_1.query)(`UPDATE user_ SET est_bloque = FALSE, derniere_sync = NOW() WHERE id_user = $1`, [id]);
+    }
+    /**
+     * Débloque un utilisateur par Firebase UID
+     */
+    static async unblockUserByFirebaseUid(firebaseUid) {
+        await (0, database_1.query)(`UPDATE user_ SET est_bloque = FALSE, derniere_sync = NOW() WHERE firebase_uid = $1`, [firebaseUid]);
     }
     /**
      * Liste tous les utilisateurs bloqués
      */
     static async getBlockedUsers() {
-        const result = await (0, database_1.query)(`SELECT id_user, nom, prenom, email, firebase_uid, date_creation, est_bloque, id_type_user
-       FROM User_ WHERE est_bloque = TRUE`);
+        const result = await (0, database_1.query)(`SELECT id_user, firebase_uid, email, display_name, date_creation, derniere_sync, est_bloque, id_type_user
+       FROM user_ WHERE est_bloque = TRUE`);
         return result.rows;
-    }
-    /**
-     * Vérifie le mot de passe d'un utilisateur (comparaison en clair)
-     */
-    static async verifyPassword(user, password) {
-        if (!user.password)
-            return false;
-        return user.password === password;
     }
     /**
      * Liste tous les utilisateurs
      */
     static async findAll() {
-        const result = await (0, database_1.query)(`SELECT u.id_user, u.nom, u.prenom, u.email, u.firebase_uid, u.date_creation, u.est_bloque, u.id_type_user, t.libelle as type_libelle
-       FROM User_ u
+        const result = await (0, database_1.query)(`SELECT u.id_user, u.firebase_uid, u.email, u.display_name, u.date_creation, u.derniere_sync, u.est_bloque, u.id_type_user, t.libelle as type_libelle
+       FROM user_ u
        JOIN TypeUser t ON u.id_type_user = t.id_type_user
        ORDER BY u.date_creation DESC`);
+        return result.rows;
+    }
+    /**
+     * Supprime un utilisateur du cache local
+     */
+    static async deleteFromCache(firebaseUid) {
+        await (0, database_1.query)(`DELETE FROM user_ WHERE firebase_uid = $1`, [firebaseUid]);
+    }
+    /**
+     * Obtient les utilisateurs non synchronisés depuis un certain temps
+     */
+    static async getStaleUsers(hours = 24) {
+        const result = await (0, database_1.query)(`SELECT id_user, firebase_uid, email, display_name, date_creation, derniere_sync, est_bloque, id_type_user
+       FROM user_ 
+       WHERE derniere_sync < NOW() - INTERVAL '${hours} hours'`);
         return result.rows;
     }
 }

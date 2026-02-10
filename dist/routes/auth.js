@@ -39,17 +39,53 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const express_validator_1 = require("express-validator");
 const userService_1 = __importDefault(require("../services/userService"));
-const loginAttemptService_1 = __importDefault(require("../services/loginAttemptService"));
-const sessionService_1 = __importDefault(require("../services/sessionService"));
 const hybridDataService_1 = require("../services/hybridDataService");
 const firebase_1 = require("../config/firebase");
+const auth_1 = require("firebase-admin/auth");
 const userTypes_1 = require("../utils/userTypes");
+const auth_2 = require("../middleware/auth");
+const loginAttemptService_1 = require("../services/loginAttemptService");
+const sessionService_1 = require("../services/sessionService");
 const router = (0, express_1.Router)();
 /**
  * @swagger
  * /api/auth/register:
  *   post:
- *     summary: Inscription d'un nouvel utilisateur
+ *     summary: "⚠️ ENDPOINT DÉSACTIVÉ - Auto-inscription interdite"
+ *     description: |
+ *       L'auto-inscription publique est DÉSACTIVÉE.
+ *
+ *       **Les utilisateurs doivent être créés par les managers via l'API de gestion des utilisateurs:**
+ *       - POST /api/users (créer un nouvel utilisateur)
+ *
+ *       Accès: Manager uniquement
+ *     tags: [Authentification]
+ *     responses:
+ *       403:
+ *         description: "Auto-inscription interdite. Contactez un manager pour créer un compte."
+ */
+router.post('/register', [
+    (0, express_validator_1.body)('email').isEmail().withMessage('Email invalide'),
+    (0, express_validator_1.body)('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères'),
+    (0, express_validator_1.body)('displayName').optional().isString().withMessage('Le nom doit être une chaîne de caractères')
+], async (req, res) => {
+    // 🔒 AUTO-INSCRIPTION DÉSACTIVÉE
+    // Les utilisateurs doivent être créés par les managers via l'API: POST /api/users
+    res.status(403).json({
+        success: false,
+        error: 'Auto-inscription interdite',
+        message: 'Pour créer un compte, veuillez contacter un administrateur (manager)',
+        hint: 'Utilisez l\'endpoint POST /api/users (managers uniquement)'
+    });
+});
+/**
+ * @swagger
+ * /api/auth/verify-token:
+ *   post:
+ *     summary: Vérifie un Firebase ID Token et retourne les informations utilisateur
+ *     description: |
+ *       Utilisé par le client après une connexion Firebase Auth côté client.
+ *       Vérifie le token et synchronise l'utilisateur localement.
  *     tags: [Authentification]
  *     requestBody:
  *       required: true
@@ -58,39 +94,21 @@ const router = (0, express_1.Router)();
  *           schema:
  *             type: object
  *             required:
- *               - nom
- *               - email
- *               - password
+ *               - idToken
  *             properties:
- *               nom:
+ *               idToken:
  *                 type: string
- *                 example: "Rakoto"
- *               prenom:
- *                 type: string
- *                 example: "Jean"
- *               email:
- *                 type: string
- *                 format: email
- *                 example: "jean.rakoto@email.mg"
- *               password:
- *                 type: string
- *                 minLength: 6
- *                 example: "motdepasse123"
+ *                 description: Firebase ID Token obtenu côté client
  *     responses:
- *       201:
- *         description: Utilisateur créé avec succès
- *       400:
- *         description: Données invalides
- *       409:
- *         description: Email déjà utilisé
+ *       200:
+ *         description: Token valide, informations utilisateur retournées
+ *       401:
+ *         description: Token invalide
  */
-router.post('/register', [
-    (0, express_validator_1.body)('nom').notEmpty().withMessage('Le nom est requis'),
-    (0, express_validator_1.body)('email').isEmail().withMessage('Email invalide'),
-    (0, express_validator_1.body)('password').isLength({ min: 6 }).withMessage('Le mot de passe doit contenir au moins 6 caractères')
+router.post('/verify-token', [
+    (0, express_validator_1.body)('idToken').notEmpty().withMessage('Token requis')
 ], async (req, res) => {
     try {
-        // Validation des entrées
         const errors = (0, express_validator_1.validationResult)(req);
         if (!errors.isEmpty()) {
             res.status(400).json({
@@ -99,63 +117,151 @@ router.post('/register', [
             });
             return;
         }
-        const { nom, prenom, email, password } = req.body;
-        // Vérifier si l'email existe déjà
-        const existingUser = await userService_1.default.findByEmail(email);
-        if (existingUser) {
-            res.status(409).json({
+        const { idToken } = req.body;
+        const isOnline = await hybridDataService_1.hybridDataService.isFirebaseAvailable();
+        // Détecter le type de token
+        const isFirebaseJWT = idToken.length > 100 && idToken.includes('.');
+        const isLocalToken = idToken.startsWith('local_');
+        let user = null;
+        let firebaseUid = null;
+        if (isOnline && isFirebaseJWT) {
+            // ===== Firebase ID Token JWT - Vérifier avec Firebase Admin SDK =====
+            try {
+                const auth = (0, auth_1.getAuth)();
+                const db = (0, firebase_1.getFirestore)();
+                const decodedToken = await auth.verifyIdToken(idToken);
+                firebaseUid = decodedToken.uid;
+                console.log(`🔐 Token JWT vérifié pour: ${decodedToken.email}`);
+                // Récupérer ou créer le profil utilisateur depuis Firestore
+                let userDoc = await db.collection('users').doc(decodedToken.uid).get();
+                let userData;
+                if (!userDoc.exists) {
+                    // Premier connexion - créer le profil
+                    userData = {
+                        firebase_uid: decodedToken.uid,
+                        email: decodedToken.email,
+                        password: '',
+                        display_name: decodedToken.name || decodedToken.email?.split('@')[0] || '',
+                        type_user: 2,
+                        est_bloque: false,
+                        date_creation: new Date()
+                    };
+                    await db.collection('users').doc(decodedToken.uid).set(userData);
+                    console.log(`✅ Nouveau profil créé pour: ${decodedToken.email}`);
+                }
+                else {
+                    userData = userDoc.data();
+                }
+                // Vérifier si l'utilisateur est bloqué
+                if (userData.est_bloque) {
+                    res.status(403).json({
+                        success: false,
+                        error: 'Votre compte est bloqué. Contactez un administrateur.'
+                    });
+                    return;
+                }
+                // Synchroniser vers PostgreSQL
+                user = await userService_1.default.syncFromFirebase({
+                    firebase_uid: decodedToken.uid,
+                    email: decodedToken.email || '',
+                    password: userData.password || '',
+                    display_name: userData.display_name,
+                    type_user: userData.type_user || 2
+                });
+            }
+            catch (firebaseError) {
+                console.error('❌ Erreur vérification JWT:', firebaseError.message);
+                res.status(401).json({
+                    success: false,
+                    error: 'Token Firebase invalide ou expiré',
+                    details: firebaseError.message
+                });
+                return;
+            }
+        }
+        else if (isLocalToken) {
+            // ===== Token local - Format: local_{id}_{timestamp} =====
+            const parts = idToken.split('_');
+            if (parts.length >= 2) {
+                const userId = parseInt(parts[1]);
+                user = await userService_1.default.findById(userId);
+                firebaseUid = user?.firebase_uid || null;
+            }
+            if (!user) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Session locale expirée'
+                });
+                return;
+            }
+        }
+        else {
+            // ===== Firebase UID - Rechercher dans PostgreSQL/Firestore =====
+            firebaseUid = idToken;
+            // Chercher d'abord dans le cache local
+            user = await userService_1.default.findByFirebaseUid(idToken);
+            // Si en ligne et pas trouvé localement, chercher dans Firestore
+            if (!user && isOnline) {
+                try {
+                    const db = (0, firebase_1.getFirestore)();
+                    const userDoc = await db.collection('users').doc(idToken).get();
+                    if (userDoc.exists) {
+                        const userData = userDoc.data();
+                        if (userData.est_bloque) {
+                            res.status(403).json({
+                                success: false,
+                                error: 'Votre compte est bloqué. Contactez un administrateur.'
+                            });
+                            return;
+                        }
+                        user = await userService_1.default.syncFromFirebase({
+                            firebase_uid: idToken,
+                            email: userData.email,
+                            password: userData.password || '',
+                            display_name: userData.display_name,
+                            type_user: userData.type_user || 2
+                        });
+                    }
+                }
+                catch (firestoreError) {
+                    console.warn('⚠️ Erreur Firestore:', firestoreError.message);
+                }
+            }
+            if (!user) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Session non trouvée. Veuillez vous reconnecter.'
+                });
+                return;
+            }
+        }
+        // Vérifier si l'utilisateur est bloqué
+        if (user.est_bloque) {
+            res.status(403).json({
                 success: false,
-                error: 'Cet email est déjà utilisé'
+                error: 'Votre compte est bloqué. Contactez un administrateur.'
             });
             return;
         }
-        // Créer l'utilisateur dans PostgreSQL
-        const user = await userService_1.default.create({
-            nom,
-            prenom,
-            email,
-            password,
-            id_type_user: 2 // Utilisateur par défaut
-        });
-        // Essayer de créer l'utilisateur dans Firebase Firestore (si connecté)
-        if (await hybridDataService_1.hybridDataService.isFirebaseAvailable()) {
-            try {
-                const db = (0, firebase_1.getFirestore)();
-                // Créer dans Firestore (collection User_)
-                await db.collection('User_').doc(user.id_user.toString()).set({
-                    id: user.id_user,
-                    nom,
-                    prenom: prenom || '',
-                    email,
-                    password, // Mot de passe en clair
-                    date_creation: new Date(),
-                    est_bloque: false,
-                    id_type_user: 2
-                });
-                console.log('✅ Utilisateur créé dans Firebase Firestore:', user.id_user);
-            }
-            catch (firebaseError) {
-                console.log('⚠️ Erreur création Firebase:', firebaseError.message);
-                // Continuer même si Firebase échoue
-            }
-        }
-        res.status(201).json({
+        res.status(200).json({
             success: true,
-            message: 'Utilisateur créé avec succès',
+            message: 'Session valide',
             user: {
                 id: user.id_user,
-                nom: user.nom,
-                prenom: user.prenom,
+                firebase_uid: user.firebase_uid,
                 email: user.email,
-                date_creation: user.date_creation
-            }
+                display_name: user.display_name,
+                type_user: user.id_type_user,
+                type_user_name: (0, userTypes_1.getUserTypeName)(user.id_type_user)
+            },
+            token: user.firebase_uid || `local_${user.id_user}_${Date.now()}`
         });
     }
     catch (error) {
-        console.error('Erreur inscription:', error);
+        console.error('Erreur verify-token:', error);
         res.status(500).json({
             success: false,
-            error: 'Erreur lors de l\'inscription',
+            error: 'Erreur lors de la vérification du token',
             details: error.message
         });
     }
@@ -164,7 +270,10 @@ router.post('/register', [
  * @swagger
  * /api/auth/login:
  *   post:
- *     summary: Connexion d'un utilisateur
+ *     summary: Connexion utilisateur (authentification locale PostgreSQL)
+ *     description: |
+ *       Authentifie l'utilisateur via la base de données PostgreSQL locale.
+ *       Les mots de passe sont vérifiés directement dans PostgreSQL.
  *     tags: [Authentification]
  *     requestBody:
  *       required: true
@@ -179,10 +288,10 @@ router.post('/register', [
  *               email:
  *                 type: string
  *                 format: email
- *                 example: "manager@manager.mg"
+ *                 example: "user@example.com"
  *               password:
  *                 type: string
- *                 example: "admin123"
+ *                 example: "motdepasse123"
  *     responses:
  *       200:
  *         description: Connexion réussie
@@ -205,88 +314,56 @@ router.post('/login', [
             return;
         }
         const { email, password } = req.body;
-        const clientIp = req.ip || req.socket.remoteAddress;
-        let user = null;
-        let passwordFromDb = '';
-        // Mode hybride: En ligne = Firestore, Hors ligne = PostgreSQL
-        const isOnline = await hybridDataService_1.hybridDataService.isFirebaseAvailable();
-        if (isOnline) {
-            // ===== MODE EN LIGNE: Chercher dans Firestore =====
-            console.log('🌐 Mode en ligne - Recherche dans Firestore...');
-            try {
-                const db = (0, firebase_1.getFirestore)();
-                const usersRef = db.collection('User_');
-                const snapshot = await usersRef.where('email', '==', email).get();
-                if (!snapshot.empty) {
-                    const firebaseUser = snapshot.docs[0].data();
-                    console.log(`🔍 Utilisateur trouvé dans Firestore: ${email}`);
-                    // Convertir id_type_user si c'est un string (anciennes données)
-                    let idTypeUser = firebaseUser.id_type_user;
-                    if (typeof idTypeUser === 'string') {
-                        const typeMapping = {
-                            'type_visiteur': 1,
-                            'type_utilisateur': 2,
-                            'type_manager': 3
-                        };
-                        idTypeUser = typeMapping[idTypeUser] || 2;
-                    }
-                    // Stocker le mot de passe pour vérification
-                    passwordFromDb = firebaseUser.password;
-                    // Construire l'objet user depuis Firestore
-                    user = {
-                        id_user: firebaseUser.id || parseInt(snapshot.docs[0].id),
-                        nom: firebaseUser.nom,
-                        prenom: firebaseUser.prenom,
-                        email: firebaseUser.email,
-                        id_type_user: idTypeUser,
-                        est_bloque: firebaseUser.est_bloque || false,
-                        date_creation: firebaseUser.date_creation
-                    };
-                    // Aussi synchroniser vers PostgreSQL (cache local)
-                    const existingLocal = await userService_1.default.findByEmail(email);
-                    if (!existingLocal) {
-                        try {
-                            await userService_1.default.createFromFirebase({
-                                nom: firebaseUser.nom,
-                                prenom: firebaseUser.prenom,
-                                email: firebaseUser.email,
-                                password: firebaseUser.password,
-                                id_type_user: idTypeUser,
-                                firebase_uid: firebaseUser.firebase_uid
-                            });
-                            console.log(`✅ Utilisateur synchronisé vers PostgreSQL (cache local)`);
-                        }
-                        catch (syncError) {
-                            console.log(`⚠️ Erreur sync PostgreSQL: ${syncError}`);
-                        }
-                    }
-                }
-            }
-            catch (error) {
-                console.log(`⚠️ Erreur Firestore, fallback PostgreSQL: ${error}`);
-                // Fallback vers PostgreSQL si erreur Firestore
-                user = await userService_1.default.findByEmail(email);
-                if (user) {
-                    passwordFromDb = user.password;
-                }
-            }
+        const ipAddress = req.ip || req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+        // ===== Vérifier si l'utilisateur est bloqué de manière permanente =====
+        const existingUser = await userService_1.default.findByEmail(email);
+        if (existingUser?.est_bloque) {
+            res.status(403).json({
+                success: false,
+                error: 'Votre compte est bloqué. Contactez un administrateur.',
+                blocked: true,
+                reason: 'permanent'
+            });
+            return;
         }
-        else {
-            // ===== MODE HORS LIGNE: Chercher dans PostgreSQL =====
-            console.log('📴 Mode hors ligne - Recherche dans PostgreSQL...');
-            user = await userService_1.default.findByEmail(email);
-            if (user) {
-                passwordFromDb = user.password;
-            }
+        // ===== Vérifier si l'email est bloqué temporairement (trop de tentatives) =====
+        const blockInfo = await loginAttemptService_1.LoginAttemptService.checkBlocking(email);
+        // Les managers ne sont jamais bloqués par les tentatives
+        if (blockInfo.isBlocked && !blockInfo.isManager) {
+            // Bloquer automatiquement le compte de l'utilisateur
+            const autoBlockResult = await loginAttemptService_1.LoginAttemptService.autoBlockUserIfNeeded(email);
+            res.status(429).json({
+                success: false,
+                error: autoBlockResult.blocked
+                    ? 'Compte bloqué suite à trop de tentatives de connexion. Contactez un administrateur.'
+                    : 'Compte temporairement bloqué suite à trop de tentatives',
+                blocked: autoBlockResult.blocked,
+                details: {
+                    tentatives: blockInfo.attempts,
+                    max_tentatives: blockInfo.maxAttempts,
+                    compte_bloque: autoBlockResult.blocked,
+                    raison: autoBlockResult.reason
+                }
+            });
+            return;
         }
+        // ===== AUTHENTIFICATION LOCALE VIA POSTGRESQL =====
+        console.log('🔐 Authentification locale via PostgreSQL...');
+        const user = await userService_1.default.verifyPassword(email, password);
         if (!user) {
+            // Enregistrer la tentative échouée
+            await loginAttemptService_1.LoginAttemptService.recordAttempt(email, false, ipAddress, 'Invalid credentials');
             res.status(401).json({
                 success: false,
                 error: 'Email ou mot de passe incorrect'
             });
             return;
         }
-        // Vérifier si l'utilisateur est bloqué
+        console.log(`✅ Authentification réussie pour: ${email}`);
+        // Enregistrer la tentative réussie
+        await loginAttemptService_1.LoginAttemptService.recordAttempt(email, true, ipAddress);
+        // Vérifier si bloqué
         if (user.est_bloque) {
             res.status(403).json({
                 success: false,
@@ -294,54 +371,25 @@ router.post('/login', [
             });
             return;
         }
-        // Vérifier le mot de passe (comparaison directe en texte clair)
-        const isValidPassword = password === passwordFromDb;
-        console.log(`🔐 Vérification mot de passe: ${isValidPassword ? '✅ Correct' : '❌ Incorrect'}`);
-        if (!isValidPassword) {
-            // Enregistrer la tentative échouée
-            await loginAttemptService_1.default.recordAttempt(user.id_user, false, clientIp);
-            // Vérifier si l'utilisateur doit être bloqué
-            const shouldBlock = await loginAttemptService_1.default.shouldBlockUser(user.id_user, user.id_type_user);
-            if (shouldBlock) {
-                await userService_1.default.blockUser(user.id_user);
-                res.status(403).json({
-                    success: false,
-                    error: 'Trop de tentatives échouées. Votre compte a été bloqué.'
-                });
-                return;
-            }
-            // Obtenir le nombre de tentatives restantes
-            const failedAttempts = await loginAttemptService_1.default.getRecentFailedAttempts(user.id_user);
-            const limit = await loginAttemptService_1.default.getAttemptLimit(user.id_type_user);
-            const remaining = limit - failedAttempts;
-            res.status(401).json({
-                success: false,
-                error: 'Email ou mot de passe incorrect',
-                tentatives_restantes: remaining
-            });
-            return;
-        }
-        // Connexion réussie - enregistrer la tentative
-        await loginAttemptService_1.default.recordAttempt(user.id_user, true, clientIp);
-        // Obtenir la durée de session pour ce type d'utilisateur
-        const sessionDuration = await sessionService_1.default.getSessionDuration(user.id_type_user);
-        // Créer une session
-        const session = await sessionService_1.default.createSession(user.id_user, sessionDuration);
+        // Désactiver les anciennes sessions de l'utilisateur avant d'en créer une nouvelle
+        await sessionService_1.SessionService.deactivateUserSessions(user.id_user);
+        // Créer une session dans PostgreSQL avec un token unique
+        const sessionToken = sessionService_1.SessionService.generateToken();
+        const session = await sessionService_1.SessionService.createSession(user.id_user, sessionToken, ipAddress, userAgent);
         res.status(200).json({
             success: true,
             message: 'Connexion réussie',
             user: {
                 id: user.id_user,
-                nom: user.nom,
-                prenom: user.prenom,
+                firebase_uid: user.firebase_uid,
                 email: user.email,
+                display_name: user.display_name,
                 type_user: user.id_type_user,
                 type_user_name: (0, userTypes_1.getUserTypeName)(user.id_type_user)
             },
-            session: {
-                token: session.token,
-                expires_at: session.date_expiration
-            }
+            token: session.token,
+            refresh_token: session.refresh_token,
+            expires_at: session.date_expiration
         });
     }
     catch (error) {
@@ -350,37 +398,6 @@ router.post('/login', [
             success: false,
             error: 'Erreur lors de la connexion',
             details: error.message
-        });
-    }
-});
-/**
- * @swagger
- * /api/auth/logout:
- *   post:
- *     summary: Déconnexion de l'utilisateur
- *     tags: [Authentification]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Déconnexion réussie
- */
-router.post('/logout', async (req, res) => {
-    try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
-        if (token) {
-            await sessionService_1.default.invalidateSession(token);
-        }
-        res.status(200).json({
-            success: true,
-            message: 'Déconnexion réussie'
-        });
-    }
-    catch (error) {
-        console.error('Erreur logout:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Erreur lors de la déconnexion'
         });
     }
 });
@@ -398,50 +415,47 @@ router.post('/logout', async (req, res) => {
  *       401:
  *         description: Non authentifié
  */
-router.get('/me', async (req, res) => {
+router.get('/me', auth_2.authMiddleware, async (req, res) => {
     try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
-        if (!token) {
+        if (!req.user) {
             res.status(401).json({
                 success: false,
-                error: 'Token manquant'
+                error: 'Non authentifié'
             });
             return;
         }
-        // Vérifier la session
-        const session = await sessionService_1.default.getSessionByToken(token);
-        if (!session) {
-            res.status(401).json({
-                success: false,
-                error: 'Session invalide ou expirée'
-            });
-            return;
-        }
-        // Obtenir l'utilisateur
-        const user = await userService_1.default.findById(session.id_user);
-        if (!user) {
-            res.status(404).json({
-                success: false,
-                error: 'Utilisateur non trouvé'
-            });
-            return;
+        // Récupérer les données complètes depuis Firestore si en ligne
+        let userData = req.user;
+        const isOnline = await hybridDataService_1.hybridDataService.isFirebaseAvailable();
+        if (isOnline && req.user.firebase_uid) {
+            try {
+                const db = (0, firebase_1.getFirestore)();
+                const userDoc = await db.collection('users').doc(req.user.firebase_uid).get();
+                if (userDoc.exists) {
+                    const firestoreData = userDoc.data();
+                    userData = {
+                        ...req.user,
+                        display_name: firestoreData.display_name || req.user.display_name,
+                        type_user: firestoreData.type_user || req.user.type_user
+                    };
+                }
+            }
+            catch (error) {
+                console.warn('⚠️ Erreur récupération Firestore:', error.message);
+            }
         }
         res.status(200).json({
             success: true,
             user: {
-                id: user.id_user,
-                nom: user.nom,
-                prenom: user.prenom,
-                email: user.email,
-                firebase_uid: user.firebase_uid,
-                date_creation: user.date_creation,
-                type_user: user.id_type_user,
-                type_user_name: (0, userTypes_1.getUserTypeName)(user.id_type_user),
-                est_bloque: user.est_bloque
+                id: userData.id,
+                firebase_uid: userData.firebase_uid,
+                email: userData.email,
+                display_name: userData.display_name,
+                type_user: userData.type_user,
+                type_user_name: (0, userTypes_1.getUserTypeName)(userData.type_user),
+                est_bloque: userData.est_bloque
             },
-            session: {
-                expires_at: session.date_expiration
-            }
+            mode: req.dataMode
         });
     }
     catch (error) {
@@ -454,9 +468,9 @@ router.get('/me', async (req, res) => {
 });
 /**
  * @swagger
- * /api/auth/update:
+ * /api/auth/update-profile:
  *   put:
- *     summary: Modifier les informations de l'utilisateur
+ *     summary: Modifier le profil utilisateur
  *     tags: [Authentification]
  *     security:
  *       - bearerAuth: []
@@ -466,79 +480,88 @@ router.get('/me', async (req, res) => {
  *           schema:
  *             type: object
  *             properties:
- *               nom:
- *                 type: string
- *               prenom:
- *                 type: string
- *               email:
- *                 type: string
- *               password:
+ *               displayName:
  *                 type: string
  *     responses:
  *       200:
- *         description: Utilisateur mis à jour
+ *         description: Profil mis à jour
  *       401:
  *         description: Non authentifié
  */
-router.put('/update', async (req, res) => {
+router.put('/update-profile', auth_2.authMiddleware, async (req, res) => {
     try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
-        if (!token) {
+        if (!req.user) {
             res.status(401).json({
                 success: false,
-                error: 'Token manquant'
+                error: 'Non authentifié'
             });
             return;
         }
-        // Vérifier la session
-        const session = await sessionService_1.default.getSessionByToken(token);
-        if (!session) {
-            res.status(401).json({
+        const { displayName, display_name, email, password } = req.body;
+        const newDisplayName = displayName || display_name;
+        const isOnline = await hybridDataService_1.hybridDataService.isFirebaseAvailable();
+        // Préparer les données de mise à jour
+        const updateData = {};
+        if (newDisplayName !== undefined)
+            updateData.display_name = newDisplayName;
+        if (email !== undefined)
+            updateData.email = email;
+        if (password !== undefined)
+            updateData.password = password;
+        if (Object.keys(updateData).length === 0) {
+            res.status(400).json({
                 success: false,
-                error: 'Session invalide ou expirée'
+                error: 'Aucune donnée à mettre à jour'
             });
             return;
         }
-        const { nom, prenom, email, password } = req.body;
-        // Vérifier si le nouvel email est déjà utilisé
-        if (email) {
-            const existingUser = await userService_1.default.findByEmail(email);
-            if (existingUser && existingUser.id_user !== session.id_user) {
-                res.status(409).json({
-                    success: false,
-                    error: 'Cet email est déjà utilisé'
-                });
-                return;
+        if (isOnline && req.user.firebase_uid) {
+            try {
+                const auth = (0, auth_1.getAuth)();
+                const db = (0, firebase_1.getFirestore)();
+                // Mettre à jour Firebase Auth
+                const authUpdate = {};
+                if (newDisplayName)
+                    authUpdate.displayName = newDisplayName;
+                if (email)
+                    authUpdate.email = email;
+                if (password)
+                    authUpdate.password = password;
+                if (Object.keys(authUpdate).length > 0) {
+                    await auth.updateUser(req.user.firebase_uid, authUpdate);
+                }
+                // Mettre à jour Firestore avec le bon format
+                const firestoreUpdate = {
+                    derniere_sync: new Date()
+                };
+                if (newDisplayName !== undefined)
+                    firestoreUpdate.display_name = newDisplayName;
+                if (email !== undefined)
+                    firestoreUpdate.email = email;
+                if (password !== undefined)
+                    firestoreUpdate.password = password;
+                await db.collection('users').doc(req.user.firebase_uid).update(firestoreUpdate);
+                console.log(`✅ Profil Firebase mis à jour pour: ${req.user.email}`);
+            }
+            catch (firebaseError) {
+                console.warn('⚠️ Erreur mise à jour Firebase:', firebaseError.message);
             }
         }
-        // Mettre à jour l'utilisateur
-        const updatedUser = await userService_1.default.update(session.id_user, {
-            nom,
-            prenom,
-            email,
-            password
-        });
-        if (!updatedUser) {
-            res.status(404).json({
-                success: false,
-                error: 'Utilisateur non trouvé'
-            });
-            return;
-        }
+        // Mettre à jour le cache local PostgreSQL
+        const updatedUser = await userService_1.default.update(req.user.id, updateData);
         res.status(200).json({
             success: true,
-            message: 'Informations mises à jour',
+            message: 'Profil mis à jour',
             user: {
-                id: updatedUser.id_user,
-                nom: updatedUser.nom,
-                prenom: updatedUser.prenom,
-                email: updatedUser.email,
-                date_creation: updatedUser.date_creation
+                id: updatedUser?.id_user,
+                firebase_uid: updatedUser?.firebase_uid,
+                email: updatedUser?.email,
+                display_name: updatedUser?.display_name
             }
         });
     }
     catch (error) {
-        console.error('Erreur update:', error);
+        console.error('Erreur update profile:', error);
         res.status(500).json({
             success: false,
             error: 'Erreur lors de la mise à jour',
@@ -548,48 +571,82 @@ router.put('/update', async (req, res) => {
 });
 /**
  * @swagger
- * /api/auth/verify-session:
- *   get:
- *     summary: Vérifier si une session est valide
+ * /api/auth/sync:
+ *   post:
+ *     summary: Synchroniser les données utilisateur avec Firebase
+ *     description: Force une synchronisation entre Firestore et PostgreSQL
  *     tags: [Authentification]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Session valide
+ *         description: Synchronisation réussie
  *       401:
- *         description: Session invalide
+ *         description: Non authentifié
  */
-router.get('/verify-session', async (req, res) => {
+router.post('/sync', auth_2.authMiddleware, async (req, res) => {
     try {
-        const token = req.headers.authorization?.replace('Bearer ', '');
-        if (!token) {
+        if (!req.user) {
             res.status(401).json({
                 success: false,
-                valid: false,
-                error: 'Token manquant'
+                error: 'Non authentifié'
             });
             return;
         }
-        const isValid = await sessionService_1.default.isSessionValid(token);
-        if (!isValid) {
-            res.status(401).json({
+        const isOnline = await hybridDataService_1.hybridDataService.isFirebaseAvailable();
+        if (!isOnline) {
+            res.status(503).json({
                 success: false,
-                valid: false,
-                error: 'Session invalide ou expirée'
+                error: 'Synchronisation impossible en mode hors ligne'
             });
             return;
         }
-        res.status(200).json({
-            success: true,
-            valid: true
-        });
+        try {
+            const db = (0, firebase_1.getFirestore)();
+            if (!req.user.firebase_uid) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Utilisateur sans firebase_uid - synchronisation impossible'
+                });
+                return;
+            }
+            const userDoc = await db.collection('users').doc(req.user.firebase_uid).get();
+            if (userDoc.exists) {
+                const firestoreData = userDoc.data();
+                // Synchroniser vers PostgreSQL (inclut le mot de passe pour mode offline)
+                await userService_1.default.syncFromFirebase({
+                    firebase_uid: req.user.firebase_uid,
+                    email: firestoreData.email || req.user.email,
+                    password: firestoreData.password || '',
+                    display_name: firestoreData.display_name,
+                    type_user: firestoreData.type_user || 2
+                });
+                res.status(200).json({
+                    success: true,
+                    message: 'Synchronisation réussie',
+                    synced_at: new Date()
+                });
+            }
+            else {
+                res.status(404).json({
+                    success: false,
+                    error: 'Profil utilisateur non trouvé dans Firestore'
+                });
+            }
+        }
+        catch (firebaseError) {
+            console.error('❌ Erreur synchronisation:', firebaseError);
+            res.status(500).json({
+                success: false,
+                error: 'Erreur lors de la synchronisation',
+                details: firebaseError.message
+            });
+        }
     }
     catch (error) {
-        console.error('Erreur verify-session:', error);
+        console.error('Erreur sync:', error);
         res.status(500).json({
             success: false,
-            valid: false,
             error: 'Erreur serveur'
         });
     }
@@ -688,6 +745,149 @@ router.get('/user-types/:id', async (req, res) => {
     }
     catch (error) {
         console.error('Erreur get user type by id:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur serveur'
+        });
+    }
+});
+/**
+ * @swagger
+ * /api/auth/logout:
+ *   post:
+ *     summary: Déconnexion de l'utilisateur
+ *     description: Invalide la session active de l'utilisateur
+ *     tags: [Authentification]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Déconnexion réussie
+ *       401:
+ *         description: Non authentifié
+ */
+router.post('/logout', auth_2.authMiddleware, async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+            await sessionService_1.SessionService.invalidateSession(token);
+        }
+        res.status(200).json({
+            success: true,
+            message: 'Déconnexion réussie'
+        });
+    }
+    catch (error) {
+        console.error('Erreur logout:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur lors de la déconnexion'
+        });
+    }
+});
+/**
+ * @swagger
+ * /api/auth/refresh-token:
+ *   post:
+ *     summary: Rafraîchir le token de session
+ *     description: Utilise le refresh_token pour obtenir un nouveau token d'accès
+ *     tags: [Authentification]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - refresh_token
+ *             properties:
+ *               refresh_token:
+ *                 type: string
+ *                 description: Le refresh token obtenu lors du login
+ *     responses:
+ *       200:
+ *         description: Nouveau token généré
+ *       401:
+ *         description: Refresh token invalide ou expiré
+ */
+router.post('/refresh-token', [
+    (0, express_validator_1.body)('refresh_token').notEmpty().withMessage('Refresh token requis')
+], async (req, res) => {
+    try {
+        const errors = (0, express_validator_1.validationResult)(req);
+        if (!errors.isEmpty()) {
+            res.status(400).json({
+                success: false,
+                errors: errors.array()
+            });
+            return;
+        }
+        const { refresh_token } = req.body;
+        const session = await sessionService_1.SessionService.refreshSession(refresh_token);
+        if (!session) {
+            res.status(401).json({
+                success: false,
+                error: 'Refresh token invalide ou expiré'
+            });
+            return;
+        }
+        res.status(200).json({
+            success: true,
+            message: 'Token rafraîchi avec succès',
+            token: session.token,
+            refresh_token: session.refresh_token,
+            expires_at: session.date_expiration
+        });
+    }
+    catch (error) {
+        console.error('Erreur refresh token:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur lors du rafraîchissement du token'
+        });
+    }
+});
+/**
+ * @swagger
+ * /api/auth/sessions:
+ *   get:
+ *     summary: Obtenir les sessions actives de l'utilisateur
+ *     tags: [Authentification]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Liste des sessions actives
+ *       401:
+ *         description: Non authentifié
+ */
+router.get('/sessions', auth_2.authMiddleware, async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            res.status(401).json({
+                success: false,
+                error: 'Non authentifié'
+            });
+            return;
+        }
+        const sessions = await sessionService_1.SessionService.getUserActiveSessions(req.user.id);
+        // Masquer les tokens complets pour la sécurité
+        const safeSessions = sessions.map(s => ({
+            id: s.id_session,
+            date_creation: s.date_creation,
+            date_expiration: s.date_expiration,
+            ip_address: s.ip_address,
+            user_agent: s.user_agent
+        }));
+        res.status(200).json({
+            success: true,
+            sessions: safeSessions,
+            count: sessions.length
+        });
+    }
+    catch (error) {
+        console.error('Erreur get sessions:', error);
         res.status(500).json({
             success: false,
             error: 'Erreur serveur'
